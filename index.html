@@ -372,7 +372,13 @@ function play() {
   syncButtons();
 }
 function pause() {
-  playing = false; clips[cur]?.video.pause(); syncButtons();
+  playing = false;
+  const c = clips[cur];
+  if (c) {
+    c.video.pause();
+    if (!inCard && globalT < total) globalT = c.vStart + Math.max(0, c.video.currentTime - c.inP);
+  }
+  syncButtons();
 }
 function advance() {
   const c = clips[cur];
@@ -427,6 +433,7 @@ function compose() {
     else if (c.tStyle === 'over' && globalT >= c.vStart && globalT <= c.vStart + c.tDur) drawCaption(c, globalT - c.vStart, W, H);
   }
   for (const s of strokes) {
+    if (s === drawing) { drawStroke(s, Infinity, 1, W, H); continue; }   // always show the stroke under the pen
     const win = strokeWindow(s);
     if (!win) continue;
     const t = globalT;
@@ -531,7 +538,8 @@ cv.addEventListener('pointerdown', e => {
   if (!clips.length || exporting) return;
   cv.setPointerCapture(e.pointerId);
   const c = clips[cur], p = canvasPoint(e);
-  const src = globalT < c.vStart ? c.inP - (c.vStart - globalT) : c.video.currentTime;
+  // Stamp the stroke from the playhead itself so it shows at exactly the frame on screen.
+  const src = c.inP + (globalT - c.vStart);
   drawing = { clipId: c.id, tool, color, size: +$('sizeIn').value, src,
               hold: $('holdSel').value, pts: [{ ...p, dt: 0 }], t0: performance.now() };
   if (tool === 'arrow') drawing.pts.push({ ...p, dt: 0 });
