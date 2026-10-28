@@ -107,6 +107,10 @@ main { display: flex; flex-direction: column; min-height: 0; min-width: 0; paddi
 .segs { position: absolute; inset: 0 0 12px 0; display: flex; gap: 2px; }
 .seg i { position: absolute; inset: 0 auto 0 0; background: rgba(0, 0, 0, .4); }
 .seg span { position: relative; }
+.seg b { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(0, 0, 0, .55) 0 3px, transparent 3px 7px); }
+.freeze-panel { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 8px; color: var(--muted); }
+.freeze-panel strong { color: var(--accent); font-weight: 600; }
+.freeze-panel input { width: 60px; }
 .seg { position: relative; background: var(--c); opacity: .55; border-radius: 4px; min-width: 2px; overflow: hidden; font-size: 11px; color: #000; padding: 2px 6px; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
 .seg.active { opacity: .9; }
 .marks { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; }
@@ -161,6 +165,7 @@ main { display: flex; flex-direction: column; min-height: 0; min-width: 0; paddi
     <h2>Drawing</h2>
     <p class="hint">Pause and draw: the drawing appears at that moment and stays for the time you pick under "Show for".
       Draw while it plays: your strokes are replayed exactly as you drew them.</p>
+    <p class="hint">Tick "Freeze frame" to stop the video on that frame while you draw. The exported video holds the still image, with your drawings, for the seconds you set, then carries on. The timeline shows freezes as striped blocks.</p>
     <p class="hint"><kbd>Space</kbd> play / pause &nbsp; <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp; <kbd>←</kbd><kbd>→</kbd> step 1 s</p>
   </aside>
 
@@ -190,9 +195,18 @@ main { display: flex; flex-direction: column; min-height: 0; min-width: 0; paddi
           <option value="all">rest of the video</option>
         </select>
       </label>
+      <label for="freezeChk"><input id="freezeChk" type="checkbox"> Freeze frame</label>
+      <label for="freezeDur">for <input id="freezeDur" type="number" min="0.5" max="60" step="0.5" value="4"> s</label>
       <span class="sep"></span>
       <button id="undoBtn">Undo</button>
       <button id="clearBtn">Clear drawings on screen</button>
+    </div>
+
+    <div class="freeze-panel" id="freezePanel" hidden>
+      <strong>Frozen frame</strong>
+      <label for="fzLen">Hold for <input id="fzLen" type="number" min="0.5" max="60" step="0.5" value="4"> s</label>
+      <button id="fzRemove">Remove freeze</button>
+      <span>Anything you draw here stays until the video moves again.</span>
     </div>
 
     <div class="transport">
@@ -226,10 +240,11 @@ const frame = document.createElement('canvas'), fctx = frame.getContext('2d');
 const COLORS = ['#ffd23f', '#ff4d4d', '#3ddc84', '#38b6ff', '#ffffff', '#111111'];
 const SEG_COLORS = ['#7cc4ff', '#ffb86b', '#9be37f', '#e59bff', '#ff8f8f', '#7fe3d6'];
 
-let clips = [];          // {id, name, url, video, dur, inP, outP, title, tStyle, tDur, gStart, card, vStart, len, color, node}
-let strokes = [];        // {clipId, tool, color, size, src, hold, pts:[{x,y,dt}]}
+let clips = [];          // {id, name, url, video, dur, inP, outP, title, tStyle, tDur, gStart, card, vStart, fz, len, color, node}
+let strokes = [];        // {clipId, tool, color, size, src | freezeId+fo, hold, pts:[{x,y,dt}]}
+let freezes = [];        // {id, clipId, src, dur, g}: hold the frame at source time `src` for `dur` seconds
 let cur = 0, globalT = 0, total = 0, playing = false, exporting = false;
-let inCard = false, cardT0 = 0;   // true while a title card plays (no video running)
+let hold = null;         // {g0, t0, end} while a title card or frozen frame plays (clock-driven, video paused)
 let tool = 'pen', color = COLORS[0];
 let drawing = null, nextId = 1;
 let audioCtx = null, recDest = null, recorder = null, chunks = [];
@@ -250,28 +265,52 @@ function layout() {
     c.gStart = g;
     c.card = c.title.trim() && c.tStyle === 'card' ? c.tDur : 0;
     c.vStart = g + c.card;
-    c.len = c.card + Math.max(0, c.outP - c.inP);
+    c.fz = freezes.filter(f => f.clipId === c.id && f.src >= c.inP - 1e-6 && f.src < c.outP).sort((a, b) => a.src - b.src);
+    let extra = 0;
+    for (const f of c.fz) { f.g = c.vStart + (f.src - c.inP) + extra; extra += f.dur; }
+    c.len = c.card + Math.max(0, c.outP - c.inP) + extra;
     c.color = SEG_COLORS[i % SEG_COLORS.length];
     g += c.len;
   });
   total = g;
   cur = Math.min(cur, Math.max(0, clips.length - 1));
 }
+// Clip timeline: [title card] then video, with each frozen frame inserted at its source time.
 function locate(g) {
   for (let i = 0; i < clips.length; i++) {
     const c = clips[i];
     if (g < c.gStart + c.len || i === clips.length - 1) {
-      const off = Math.max(0, g - c.gStart);
-      return { i, inCard: off < c.card, local: c.inP + Math.min(Math.max(0, off - c.card), c.outP - c.inP) };
+      if (g < c.vStart) return { i, inCard: true, local: c.inP };
+      let t = c.vStart, s = c.inP;
+      for (const f of c.fz) {
+        const seg = f.src - s;
+        if (g < t + seg) return { i, local: s + (g - t) };
+        t += seg; s = f.src;
+        if (g < t + f.dur) return { i, freeze: f, local: f.src };
+        t += f.dur;
+      }
+      return { i, local: Math.min(c.outP, s + Math.max(0, g - t)) };
     }
   }
-  return { i: 0, inCard: false, local: 0 };
+  return { i: 0, local: 0 };
+}
+// Timeline position of video source time `s` (just after any freeze at s).
+function srcToGlobal(c, s) {
+  let g = c.vStart + (s - c.inP);
+  if (s >= c.inP) for (const f of c.fz) if (f.src <= s + 1e-4) g += f.dur;
+  return g;
 }
 // Stroke times are in the clip's source time; a negative offset from inP means "during the title card".
+// Strokes drawn on a frozen frame belong to that freeze and last until the video moves again.
 function strokeWindow(s) {
   const c = clips.find(c => c.id === s.clipId);
-  if (!c || s.src < c.inP - c.card - 0.02 || s.src > c.outP + 0.02) return null;
-  const gs = c.vStart + (s.src - c.inP);
+  if (!c) return null;
+  if (s.freezeId) {
+    const f = c.fz.find(f => f.id === s.freezeId);
+    return f ? { gs: f.g + Math.min(s.fo, f.dur), end: f.g + f.dur } : null;
+  }
+  if (s.src < c.inP - c.card - 0.02 || s.src > c.outP + 0.02) return null;
+  const gs = srcToGlobal(c, s.src);
   const last = s.pts[s.pts.length - 1].dt;
   const end = s.hold === 'clip' ? c.gStart + c.len : s.hold === 'all' ? Infinity : gs + last + Number(s.hold);
   return { gs, end };
@@ -352,17 +391,17 @@ function seek(g, keepPlaying = playing) {
   }
   const v = clips[cur].video;
   v.currentTime = loc.local;
-  globalT = g; inCard = loc.inCard;
+  globalT = g; hold = null;
   if (keepPlaying) startCur(); else v.pause();
   renderBinActive();
 }
-// Start the current clip from globalT: either its title card (clock-driven) or its video.
+// Start the current clip from globalT: a title card or frozen frame runs on the clock, otherwise the video plays.
 function startCur() {
-  const c = clips[cur];
-  if (globalT < c.vStart - 0.001) {
-    inCard = true; c.video.pause();
-    cardT0 = performance.now() - (globalT - c.gStart) * 1000;
-  } else { inCard = false; c.video.play(); }
+  const c = clips[cur], loc = locate(globalT);
+  if (loc.inCard || loc.freeze) {
+    c.video.pause();
+    hold = { g0: globalT, t0: performance.now(), end: loc.inCard ? c.vStart : loc.freeze.g + loc.freeze.dur };
+  } else { hold = null; c.video.play(); }
 }
 function play() {
   if (!clips.length || total <= 0) return;
@@ -376,7 +415,8 @@ function pause() {
   const c = clips[cur];
   if (c) {
     c.video.pause();
-    if (!inCard && globalT < total) globalT = c.vStart + Math.max(0, c.video.currentTime - c.inP);
+    if (!hold && globalT < total) globalT = srcToGlobal(c, c.video.currentTime);
+    hold = null;
   }
   syncButtons();
 }
@@ -408,18 +448,29 @@ function grabFrame() {
 function tick() {
   const c = clips[cur];
   if (c && playing) {
-    if (inCard) {
-      globalT = c.gStart + (performance.now() - cardT0) / 1000;
-      if (globalT >= c.vStart) { globalT = c.vStart; inCard = false; c.video.play(); }
+    if (hold) {
+      globalT = hold.g0 + (performance.now() - hold.t0) / 1000;
+      if (globalT >= hold.end) {
+        globalT = hold.end + 1e-4;   // step just past the hold so locate() lands on what follows
+        if (globalT >= c.gStart + c.len - 1e-3) advance(); else startCur();
+      }
     } else {
       const v = c.video;
-      if (v.currentTime >= c.outP - 1 / 60 || v.ended) advance();
-      else globalT = c.vStart + Math.max(0, v.currentTime - c.inP);
+      const nf = c.fz.find(f => f.g > globalT - 1e-3);
+      if (nf && v.currentTime >= nf.src - 0.002) {
+        // Reached a freeze: snap to its exact frame and hold it.
+        v.pause();
+        if (Math.abs(v.currentTime - nf.src) > 0.001) v.currentTime = nf.src;
+        globalT = nf.g;
+        hold = { g0: nf.g, t0: performance.now(), end: nf.g + nf.dur };
+      } else if (v.currentTime >= c.outP - 1 / 60 || v.ended) advance();
+      else globalT = srcToGlobal(c, v.currentTime);
     }
     grabFrame();
   }
   compose();
   updateClock();
+  updateFreezePanel();
   requestAnimationFrame(tick);
 }
 
@@ -537,14 +588,61 @@ function canvasPoint(e) {
 cv.addEventListener('pointerdown', e => {
   if (!clips.length || exporting) return;
   cv.setPointerCapture(e.pointerId);
+  const freezeOn = $('freezeChk').checked;
+  if (playing && freezeOn) pause();
   const c = clips[cur], p = canvasPoint(e);
-  // Stamp the stroke from the playhead itself so it shows at exactly the frame on screen.
-  const src = c.inP + (globalT - c.vStart);
-  drawing = { clipId: c.id, tool, color, size: +$('sizeIn').value, src,
+  let loc = locate(globalT);
+  if (freezeOn && !loc.freeze && !loc.inCard && loc.local < c.outP - 0.01) {
+    // Insert a frozen frame right here; the playhead is already at its start.
+    const f = { id: nextId++, clipId: c.id, src: loc.local, dur: freezeLen() };
+    freezes.push(f);
+    layout(); globalT = f.g; loc = { freeze: f };
+    renderTimeline(); refreshLens();
+  }
+  drawing = { clipId: c.id, tool, color, size: +$('sizeIn').value,
               hold: $('holdSel').value, pts: [{ ...p, dt: 0 }], t0: performance.now() };
+  // Stamp the stroke from the playhead itself so it shows at exactly the frame on screen.
+  if (loc.freeze) { drawing.freezeId = loc.freeze.id; drawing.fo = Math.max(0, globalT - loc.freeze.g); }
+  else drawing.src = loc.inCard ? c.inP - (c.vStart - globalT) : loc.local;
   if (tool === 'arrow') drawing.pts.push({ ...p, dt: 0 });
   strokes.push(drawing);
 });
+const freezeLen = () => { const v = parseFloat($('freezeDur').value); return isNaN(v) ? 4 : Math.min(60, Math.max(0.5, v)); };
+function refreshLens() {
+  document.querySelectorAll('.clip').forEach((row, i) => row.querySelector('.len').textContent = fmt(clips[i].len));
+}
+// Drop frozen frames that no longer have any drawing on them.
+function pruneFreezes() {
+  const before = freezes.length;
+  freezes = freezes.filter(f => strokes.some(s => s.freezeId === f.id));
+  if (freezes.length !== before) { layout(); refreshLens(); if (!playing) seek(Math.min(globalT, total)); }
+}
+// Freeze panel: shown while paused on a frozen frame, to change its length or remove it.
+let shownFreeze = null;
+function updateFreezePanel() {
+  const loc = !playing && !exporting && clips.length ? locate(globalT) : {};
+  const f = loc.freeze || null;
+  if (f === shownFreeze) return;
+  shownFreeze = f;
+  $('freezePanel').hidden = !f;
+  if (f) $('fzLen').value = f.dur;
+}
+$('fzLen').addEventListener('change', () => {
+  const f = shownFreeze; if (!f) return;
+  const v = parseFloat($('fzLen').value);
+  f.dur = isNaN(v) ? f.dur : Math.min(60, Math.max(0.5, v));
+  $('fzLen').value = f.dur;
+  layout(); renderTimeline(); refreshLens(); seek(f.g);
+});
+$('fzRemove').onclick = () => {
+  const f = shownFreeze; if (!f) return;
+  freezes = freezes.filter(x => x !== f);
+  strokes = strokes.filter(s => s.freezeId !== f.id);
+  const g = f.g;
+  layout(); renderTimeline(); refreshLens(); seek(Math.min(g, total));
+  toast('Freeze removed, along with its drawings.');
+};
+$('freezeChk').onchange = () => { $('holdSel').disabled = $('freezeChk').checked; };
 cv.addEventListener('pointermove', e => {
   if (!drawing) return;
   const p = canvasPoint(e);
@@ -608,7 +706,7 @@ $('bin').addEventListener('click', e => {
     cur = clips.indexOf(active);
   } else if (act === 'del') {
     pause(); c.video.pause(); c.video.remove(); URL.revokeObjectURL(c.url);
-    clips.splice(i, 1); strokes = strokes.filter(s => s.clipId !== c.id);
+    clips.splice(i, 1); strokes = strokes.filter(s => s.clipId !== c.id); freezes = freezes.filter(f => f.clipId !== c.id);
     cur = 0; globalT = 0;
     if (!clips.length) { $('stage').classList.add('empty'); fctx.clearRect(0, 0, frame.width, frame.height); }
   } else if (act === 'inHere' || act === 'outHere') {
@@ -617,7 +715,7 @@ $('bin').addEventListener('click', e => {
   }
   const keepLocal = clips[cur] ? clips[cur].video.currentTime : 0;
   layout(); renderBin(); renderTimeline(); syncButtons();
-  if (clips.length) { const a = clips[cur]; seek(a.vStart + Math.min(Math.max(0, keepLocal - a.inP), a.outP - a.inP)); }
+  if (clips.length) { const a = clips[cur]; seek(srcToGlobal(a, Math.min(Math.max(a.inP, keepLocal), a.outP))); }
 });
 // Typing a title updates live without rebuilding the list (which would steal focus).
 $('bin').addEventListener('input', e => {
@@ -625,7 +723,7 @@ $('bin').addEventListener('input', e => {
   const el = e.target.closest('.clip'), c = clips.find(c => c.id === +el.dataset.id);
   c.title = e.target.value;
   layout(); renderTimeline();
-  document.querySelectorAll('.clip').forEach((row, i) => row.querySelector('.len').textContent = fmt(clips[i].len));
+  refreshLens();
   if (!playing) seek(c.tStyle === 'card' ? c.gStart + Math.min(1, c.card / 2) : c.vStart + Math.min(1, c.tDur / 2));
 });
 $('bin').addEventListener('change', e => {
@@ -648,7 +746,9 @@ function renderTimeline() {
   clips.forEach(c => {
     const d = document.createElement('div'); d.className = 'seg';
     d.style.setProperty('--c', c.color); d.style.flex = `${c.len} 0 0`;
-    d.innerHTML = (c.card ? `<i style="width:${(c.card / c.len) * 100}%"></i>` : '') + `<span>${esc(c.title.trim() || c.name)}</span>`;
+    d.innerHTML = (c.card ? `<i style="width:${(c.card / c.len) * 100}%"></i>` : '')
+      + c.fz.map(f => `<b style="left:${((f.g - c.gStart) / c.len) * 100}%;width:${(f.dur / c.len) * 100}%"></b>`).join('')
+      + `<span>${esc(c.title.trim() || c.name)}</span>`;
     segs.appendChild(d);
   });
   const marks = $('marks'); marks.innerHTML = '';
@@ -681,10 +781,10 @@ COLORS.forEach(col => {
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => {
   tool = b.dataset.tool; document.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('on', x === b));
 });
-$('undoBtn').onclick = () => { strokes.pop(); renderTimeline(); };
+$('undoBtn').onclick = () => { strokes.pop(); pruneFreezes(); renderTimeline(); };
 $('clearBtn').onclick = () => {
   strokes = strokes.filter(s => { const w = strokeWindow(s); return !(w && globalT >= w.gs - 0.03 && globalT <= w.end); });
-  renderTimeline();
+  pruneFreezes(); renderTimeline();
 };
 $('playBtn').onclick = () => playing ? pause() : play();
 $('addBtn').onclick = () => $('fileIn').click();
@@ -757,7 +857,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden && recorder.state === 'recording') { clips[cur].video.pause(); recorder.pause(); hiddenAt = performance.now(); }
   else if (!document.hidden && recorder.state === 'paused') {
     recorder.resume();
-    if (inCard) cardT0 += performance.now() - hiddenAt; else clips[cur].video.play();
+    if (hold) hold.t0 += performance.now() - hiddenAt; else clips[cur].video.play();
     toast('Export resumed. Keep this tab in front until it finishes.');
   }
 });

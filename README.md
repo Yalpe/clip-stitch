@@ -6,6 +6,7 @@ Join short video clips into one video, draw on top, and add titles — all in yo
 
 - Add clips, reorder them, and trim each one.
 - Draw with a pen, highlighter, or arrows. Draw while paused to place a drawing at that moment, or while playing to record the strokes as you make them.
+- Freeze the frame while you draw: the video holds still with your drawings for as long as you set, then carries on.
 - Give any clip a title: a full-screen card before it, or a caption over its first seconds.
 - Export a single MP4 (or WebM) with sound.
 
