@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clip Stitch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: editing-bay — clip bin on the left, stage + transport + timeline on the right. Deliberately single dark theme, like a monitor booth. */
+:root {
+  --bg: #121316;
+  --panel: #1b1d22;
+  --panel-2: #24272e;
+  --line: #33363f;
+  --fg: #e9e8e4;
+  --muted: #9a9ca5;
+  --accent: #ffd23f;      /* marker yellow */
+  --accent-ink: #1a1600;
+  --danger: #ff6b5e;
+  --font-body: "Figtree", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+.stage:not(.empty) .drop { display: none; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font-body); }
+button, input, select { font: inherit; color: inherit; }
+button {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 10px; cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+input[type=number], select {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px;
+}
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.app { display: grid; grid-template-columns: 320px 1fr; grid-template-rows: auto 1fr; height: 100%; }
+header {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+header h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
+header h1 span { color: var(--accent); }
+header .spacer { flex: 1; }
+header label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+
+aside {
+  border-right: 1px solid var(--line); background: var(--panel); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; min-height: 0;
+}
+aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; font-weight: 600; }
+.bin { display: flex; flex-direction: column; gap: 8px; }
+.clip {
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg);
+  display: grid; gap: 8px; border-left: 4px solid var(--c);
+}
+.clip.active { border-color: var(--accent); border-left-color: var(--c); }
+.clip .top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.clip .num { font-family: var(--font-mono); color: var(--muted); font-size: 12px; }
+.clip .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; cursor: pointer; }
+.clip .len { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.clip .trim { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.clip .trim input { width: 68px; font-family: var(--font-mono); font-size: 12px; }
+.clip .trim button, .clip .top button { padding: 2px 7px; font-size: 12px; }
+.clip .titlerow input[type=text] {
+  flex: 1 1 140px; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 5px;
+  padding: 4px 6px; font-size: 13px;
+}
+.clip .titlerow input[type=number] { width: 52px; }
+.clip .titlerow select { font-size: 12px; padding: 3px 4px; }
+.hint { color: var(--muted); font-size: 12.5px; }
+.hint kbd { font-family: var(--font-mono); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+
+main { display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 14px 16px; gap: 12px; }
+.stage {
+  flex: 1; min-height: 200px; display: grid; place-items: center; background: #000;
+  border-radius: 8px; position: relative; overflow: hidden;
+}
+.stage canvas { max-width: 100%; max-height: 100%; display: block; touch-action: none; cursor: crosshair; }
+.stage.empty canvas { display: none; }
+.drop {
+  position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted);
+  pointer-events: none; padding: 20px;
+}
+.drop strong { display: block; color: var(--fg); font-size: 18px; margin-bottom: 4px; }
+.stage.dragover { outline: 3px dashed var(--accent); outline-offset: -8px; }
+
+.tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tools .group { display: flex; gap: 4px; align-items: center; }
+.tools .sep { width: 1px; height: 24px; background: var(--line); }
+.swatch { width: 24px; height: 24px; border-radius: 50%; padding: 0; border: 2px solid var(--line); background: var(--sw); }
+.swatch.on { border-color: var(--fg); box-shadow: 0 0 0 2px var(--bg) inset; }
+.tools label { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+
+.transport { display: flex; align-items: center; gap: 10px; }
+.transport .time { color: var(--muted); }
+.transport .time b { color: var(--fg); font-weight: 600; }
+.timeline { position: relative; height: 44px; cursor: pointer; user-select: none; touch-action: none; }
+.segs { position: absolute; inset: 0 0 12px 0; display: flex; gap: 2px; }
+.seg i { position: absolute; inset: 0 auto 0 0; background: rgba(0, 0, 0, .4); }
+.seg span { position: relative; }
+.seg { position: relative; background: var(--c); opacity: .55; border-radius: 4px; min-width: 2px; overflow: hidden; font-size: 11px; color: #000; padding: 2px 6px; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.seg.active { opacity: .9; }
+.marks { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; }
+.mark { position: absolute; bottom: 0; width: 3px; height: 8px; background: var(--accent); border-radius: 1px; }
+.playhead { position: absolute; top: -3px; bottom: -2px; width: 2px; background: var(--fg); pointer-events: none; }
+.playhead::before { content: ""; position: absolute; top: 0; left: -5px; border: 6px solid transparent; border-top-color: var(--fg); }
+
+.progress { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; flex: 1; min-width: 80px; }
+.progress div { height: 100%; width: 0; background: var(--accent); }
+.export-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.export-row a { color: var(--accent); font-weight: 600; }
+
+.toast {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel-2);
+  border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; max-width: calc(100% - 32px);
+}
+.toast.err { border-color: var(--danger); }
+#vids { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
+
+@media (max-width: 820px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; height: auto; }
+  aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; }
+  .stage { min-height: 240px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Clip <span>Stitch</span></h1>
+    <button id="addBtn" class="primary">+ Add clips</button>
+    <input id="fileIn" type="file" accept="video/*" multiple hidden>
+    <span class="spacer"></span>
+    <label for="resSel">Output size
+      <select id="resSel">
+        <option value="auto">Same as first clip</option>
+        <option value="1920x1080">1920 × 1080 (landscape)</option>
+        <option value="1280x720">1280 × 720 (landscape)</option>
+        <option value="1080x1920">1080 × 1920 (vertical)</option>
+        <option value="1080x1080">1080 × 1080 (square)</option>
+      </select>
+    </label>
+    <button id="exportBtn" disabled>Export video</button>
+  </header>
+
+  <aside>
+    <h2>Clips, in play order</h2>
+    <div id="bin" class="bin"></div>
+    <p class="hint" id="binHint">Add or drop video files. They play top to bottom. Trim each one with the start and end boxes (seconds into that file).</p>
+    <p class="hint">Type a title on any clip to show it as a title card before the clip, or as a caption over its first seconds.</p>
+    <h2>Drawing</h2>
+    <p class="hint">Pause and draw: the drawing appears at that moment and stays for the time you pick under "Show for".
+      Draw while it plays: your strokes are replayed exactly as you drew them.</p>
+    <p class="hint"><kbd>Space</kbd> play / pause &nbsp; <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp; <kbd>←</kbd><kbd>→</kbd> step 1 s</p>
+  </aside>
+
+  <main>
+    <div id="stage" class="stage empty">
+      <canvas id="cv" width="1280" height="720"></canvas>
+      <div class="drop" id="dropMsg"><div><strong>Drop video files here</strong>or use “+ Add clips”. Nothing is uploaded; everything stays on this computer.</div></div>
+    </div>
+
+    <div class="tools" id="tools">
+      <div class="group" role="group" aria-label="Tool">
+        <button data-tool="pen" class="on">Pen</button>
+        <button data-tool="hl">Highlighter</button>
+        <button data-tool="arrow">Arrow</button>
+      </div>
+      <span class="sep"></span>
+      <div class="group" id="swatches" role="group" aria-label="Color"></div>
+      <span class="sep"></span>
+      <label for="sizeIn">Size <input id="sizeIn" type="range" min="2" max="30" value="6"></label>
+      <label for="holdSel">Show for
+        <select id="holdSel">
+          <option value="1">1 s</option>
+          <option value="2">2 s</option>
+          <option value="3" selected>3 s</option>
+          <option value="5">5 s</option>
+          <option value="clip">rest of this clip</option>
+          <option value="all">rest of the video</option>
+        </select>
+      </label>
+      <span class="sep"></span>
+      <button id="undoBtn">Undo</button>
+      <button id="clearBtn">Clear drawings on screen</button>
+    </div>
+
+    <div class="transport">
+      <button id="playBtn" disabled>▶ Play</button>
+      <span class="time mono"><b id="tNow">0:00.0</b> / <span id="tTotal">0:00.0</span></span>
+    </div>
+    <div class="timeline" id="timeline">
+      <div class="segs" id="segs"></div>
+      <div class="marks" id="marks"></div>
+      <div class="playhead" id="playhead" style="left:0"></div>
+    </div>
+
+    <div class="export-row" id="exportRow" hidden>
+      <span id="exportMsg">Recording…</span>
+      <div class="progress"><div id="exportBar"></div></div>
+      <button id="cancelBtn">Cancel</button>
+    </div>
+    <div class="export-row" id="doneRow" hidden>
+      <span id="doneMsg"></span>
+      <a id="dlLink" href="#">Download again</a>
+    </div>
+  </main>
+</div>
+<div id="vids"></div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx2d = cv.getContext('2d');
+const frame = document.createElement('canvas'), fctx = frame.getContext('2d');
+const COLORS = ['#ffd23f', '#ff4d4d', '#3ddc84', '#38b6ff', '#ffffff', '#111111'];
+const SEG_COLORS = ['#7cc4ff', '#ffb86b', '#9be37f', '#e59bff', '#ff8f8f', '#7fe3d6'];
+
+let clips = [];          // {id, name, url, video, dur, inP, outP, title, tStyle, tDur, gStart, card, vStart, len, color, node}
+let strokes = [];        // {clipId, tool, color, size, src, hold, pts:[{x,y,dt}]}
+let cur = 0, globalT = 0, total = 0, playing = false, exporting = false;
+let inCard = false, cardT0 = 0;   // true while a title card plays (no video running)
+let tool = 'pen', color = COLORS[0];
+let drawing = null, nextId = 1;
+let audioCtx = null, recDest = null, recorder = null, chunks = [];
+
+// ---------- helpers ----------
+const fmt = s => { s = Math.max(0, s || 0); const m = Math.floor(s / 60); return m + ':' + (s % 60).toFixed(1).padStart(4, '0'); };
+let toastTimer;
+function toast(msg, err) {
+  const t = $('toast'); t.textContent = msg; t.className = 'toast' + (err ? ' err' : ''); t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, err ? 6000 : 3000);
+}
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+const once = (el, ev) => new Promise(r => el.addEventListener(ev, r, { once: true }));
+
+function layout() {
+  let g = 0;
+  clips.forEach((c, i) => {
+    c.gStart = g;
+    c.card = c.title.trim() && c.tStyle === 'card' ? c.tDur : 0;
+    c.vStart = g + c.card;
+    c.len = c.card + Math.max(0, c.outP - c.inP);
+    c.color = SEG_COLORS[i % SEG_COLORS.length];
+    g += c.len;
+  });
+  total = g;
+  cur = Math.min(cur, Math.max(0, clips.length - 1));
+}
+function locate(g) {
+  for (let i = 0; i < clips.length; i++) {
+    const c = clips[i];
+    if (g < c.gStart + c.len || i === clips.length - 1) {
+      const off = Math.max(0, g - c.gStart);
+      return { i, inCard: off < c.card, local: c.inP + Math.min(Math.max(0, off - c.card), c.outP - c.inP) };
+    }
+  }
+  return { i: 0, inCard: false, local: 0 };
+}
+// Stroke times are in the clip's source time; a negative offset from inP means "during the title card".
+function strokeWindow(s) {
+  const c = clips.find(c => c.id === s.clipId);
+  if (!c || s.src < c.inP - c.card - 0.02 || s.src > c.outP + 0.02) return null;
+  const gs = c.vStart + (s.src - c.inP);
+  const last = s.pts[s.pts.length - 1].dt;
+  const end = s.hold === 'clip' ? c.gStart + c.len : s.hold === 'all' ? Infinity : gs + last + Number(s.hold);
+  return { gs, end };
+}
+
+// ---------- loading clips ----------
+async function addFiles(files) {
+  for (const file of files) {
+    if (!file.type.startsWith('video/') && !/\.(mp4|mov|webm|mkv|m4v|avi)$/i.test(file.name)) continue;
+    const url = URL.createObjectURL(file);
+    const v = document.createElement('video');
+    v.preload = 'auto'; v.playsInline = true; v.src = url;
+    $('vids').appendChild(v);
+    const ok = await Promise.race([once(v, 'loadeddata').then(() => true), once(v, 'error').then(() => false)]);
+    if (!ok || !v.videoWidth) {
+      toast(`Can't play “${file.name}” in this browser. iPhone HEVC .mov files often need converting to MP4 first.`, true);
+      v.remove(); URL.revokeObjectURL(url); continue;
+    }
+    let dur = v.duration;
+    if (!isFinite(dur)) dur = await probeDuration(v);
+    if (!isFinite(dur) || dur <= 0) { toast(`Couldn't read the length of “${file.name}”.`, true); v.remove(); URL.revokeObjectURL(url); continue; }
+    const c = { id: nextId++, name: file.name, url, video: v, dur, inP: 0, outP: dur, title: '', tStyle: 'card', tDur: 2 };
+    v.addEventListener('seeked', () => { if (clips[cur] === c) grabFrame(); });
+    clips.push(c);
+    if (audioCtx) connectAudio(c);
+    if (clips.length === 1) { applySize(); }
+  }
+  layout(); renderBin(); renderTimeline();
+  if (clips.length) { $('stage').classList.remove('empty'); seek(globalT); }
+  syncButtons();
+}
+// Browser-recorded WebM files often report Infinity until you seek past the end.
+async function probeDuration(v) {
+  v.currentTime = 1e9;
+  await Promise.race([once(v, 'seeked'), new Promise(r => setTimeout(r, 3000))]);
+  let d = v.duration;
+  if (!isFinite(d)) d = v.seekable.length ? v.seekable.end(v.seekable.length - 1) : v.buffered.length ? v.buffered.end(v.buffered.length - 1) : NaN;
+  v.currentTime = 0;
+  await Promise.race([once(v, 'seeked'), new Promise(r => setTimeout(r, 1000))]);
+  return d;
+}
+function applySize() {
+  const val = $('resSel').value;
+  let w, h;
+  if (val === 'auto') {
+    const v = clips[0]?.video; if (!v) return;
+    const scale = Math.min(1, 1920 / Math.max(v.videoWidth, v.videoHeight));   // cap at 1080p-class
+    w = Math.round(v.videoWidth * scale / 2) * 2; h = Math.round(v.videoHeight * scale / 2) * 2;
+  } else [w, h] = val.split('x').map(Number);
+  cv.width = frame.width = w; cv.height = frame.height = h;
+  grabFrame();
+}
+
+// ---------- audio graph (needed so the export includes sound) ----------
+function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new AudioContext();
+    recDest = audioCtx.createMediaStreamDestination();
+    clips.forEach(connectAudio);
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function connectAudio(c) {
+  if (c.node) return;
+  c.node = audioCtx.createMediaElementSource(c.video);
+  c.node.connect(audioCtx.destination);
+  c.node.connect(recDest);
+}
+
+// ---------- playback ----------
+function seek(g, keepPlaying = playing) {
+  if (!clips.length) return;
+  g = Math.max(0, Math.min(g, total));
+  const loc = locate(g);
+  if (loc.i !== cur) {
+    const old = clips[cur]; if (old) { old.video.pause(); old.video.currentTime = old.inP; }
+    cur = loc.i;
+  }
+  const v = clips[cur].video;
+  v.currentTime = loc.local;
+  globalT = g; inCard = loc.inCard;
+  if (keepPlaying) startCur(); else v.pause();
+  renderBinActive();
+}
+// Start the current clip from globalT: either its title card (clock-driven) or its video.
+function startCur() {
+  const c = clips[cur];
+  if (globalT < c.vStart - 0.001) {
+    inCard = true; c.video.pause();
+    cardT0 = performance.now() - (globalT - c.gStart) * 1000;
+  } else { inCard = false; c.video.play(); }
+}
+function play() {
+  if (!clips.length || total <= 0) return;
+  ensureAudio();
+  if (globalT >= total - 0.05) seek(0, false);
+  playing = true; startCur();
+  syncButtons();
+}
+function pause() {
+  playing = false; clips[cur]?.video.pause(); syncButtons();
+}
+function advance() {
+  const c = clips[cur];
+  if (cur + 1 < clips.length) {
+    c.video.pause();
+    cur++;
+    const n = clips[cur];
+    if (Math.abs(n.video.currentTime - n.inP) > 0.05) n.video.currentTime = n.inP;
+    globalT = n.gStart;
+    startCur();
+    renderBinActive();
+  } else {
+    globalT = total; pause();
+    if (exporting) finishExport();
+  }
+}
+function grabFrame() {
+  const v = clips[cur]?.video;
+  if (!v || v.readyState < 2) return;
+  const W = frame.width, H = frame.height;
+  const s = Math.min(W / v.videoWidth, H / v.videoHeight);
+  const w = v.videoWidth * s, h = v.videoHeight * s;
+  fctx.fillStyle = '#000'; fctx.fillRect(0, 0, W, H);
+  fctx.drawImage(v, (W - w) / 2, (H - h) / 2, w, h);
+}
+
+function tick() {
+  const c = clips[cur];
+  if (c && playing) {
+    if (inCard) {
+      globalT = c.gStart + (performance.now() - cardT0) / 1000;
+      if (globalT >= c.vStart) { globalT = c.vStart; inCard = false; c.video.play(); }
+    } else {
+      const v = c.video;
+      if (v.currentTime >= c.outP - 1 / 60 || v.ended) advance();
+      else globalT = c.vStart + Math.max(0, v.currentTime - c.inP);
+    }
+    grabFrame();
+  }
+  compose();
+  updateClock();
+  requestAnimationFrame(tick);
+}
+
+// ---------- drawing ----------
+function compose() {
+  const W = cv.width, H = cv.height;
+  ctx2d.drawImage(frame, 0, 0);
+  const c = clips[cur];
+  if (c && c.title.trim()) {
+    if (c.tStyle === 'card' && globalT < c.vStart) drawCard(c, globalT - c.gStart, W, H);
+    else if (c.tStyle === 'over' && globalT >= c.vStart && globalT <= c.vStart + c.tDur) drawCaption(c, globalT - c.vStart, W, H);
+  }
+  for (const s of strokes) {
+    const win = strokeWindow(s);
+    if (!win) continue;
+    const t = globalT;
+    if (t < win.gs - 0.03 || t > win.end) continue;
+    const elapsed = t - win.gs;
+    const fade = isFinite(win.end) && s.hold !== 'clip' ? Math.min(1, (win.end - t) / 0.25) : 1;
+    drawStroke(s, s === drawing ? Infinity : elapsed, fade, W, H);
+  }
+}
+// ---------- titles ----------
+const TITLE_FONT = '"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif';
+const ease = x => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
+function wrapLines(text, maxW, maxLines) {
+  const lines = []; let line = '';
+  for (const w of text.trim().split(/\s+/)) {
+    const t = line ? line + ' ' + w : w;
+    if (line && ctx2d.measureText(t).width > maxW) { lines.push(line); line = w; } else line = t;
+  }
+  if (line) lines.push(line);
+  return lines.slice(0, maxLines);
+}
+// Full-screen card: text rises in, a marker underline draws across, then everything fades to the clip.
+function drawCard(c, t, W, H) {
+  const u = Math.min(W, H);
+  const alpha = Math.min(1, t / 0.35, (c.tDur - t) / 0.35);
+  ctx2d.save();
+  ctx2d.fillStyle = '#0e0f12'; ctx2d.fillRect(0, 0, W, H);
+  ctx2d.globalAlpha = Math.max(0, alpha);
+  const size = u * 0.1;
+  ctx2d.font = `700 ${size}px ${TITLE_FONT}`;
+  ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'middle';
+  const lines = wrapLines(c.title, W * 0.82, 3);
+  const lh = size * 1.12, rise = (1 - ease(t / 0.6)) * u * 0.03;
+  const top = H / 2 - (lines.length - 1) * lh / 2 - size * 0.25 + rise;
+  ctx2d.fillStyle = '#f4f3ef';
+  lines.forEach((l, i) => ctx2d.fillText(l, W / 2, top + i * lh));
+  const widest = Math.max(...lines.map(l => ctx2d.measureText(l).width));
+  const barW = widest * 0.5 * ease((t - 0.2) / 0.6);
+  ctx2d.fillStyle = '#ffd23f';
+  ctx2d.fillRect(W / 2 - barW / 2, top + (lines.length - 1) * lh + size * 0.75, barW, Math.max(3, u * 0.012));
+  ctx2d.restore();
+}
+// Caption over the clip: a lower-third tag that slides in from the left and fades out.
+function drawCaption(c, t, W, H) {
+  const u = Math.min(W, H);
+  const alpha = Math.max(0, Math.min(1, (c.tDur - t) / 0.35));
+  const size = u * 0.055;
+  ctx2d.save();
+  ctx2d.font = `700 ${size}px ${TITLE_FONT}`;
+  ctx2d.textBaseline = 'middle';
+  const lines = wrapLines(c.title, W * 0.7, 2);
+  const lh = size * 1.15, pad = size * 0.55;
+  const boxW = Math.max(...lines.map(l => ctx2d.measureText(l).width)) + pad * 2;
+  const boxH = lines.length * lh + pad * 1.2;
+  const x = u * 0.05 - (1 - ease(t / 0.4)) * (boxW + u * 0.05), y = H - u * 0.07 - boxH;
+  ctx2d.globalAlpha = alpha;
+  ctx2d.fillStyle = 'rgba(14, 15, 18, 0.82)'; ctx2d.fillRect(x, y, boxW, boxH);
+  ctx2d.fillStyle = '#ffd23f'; ctx2d.fillRect(x, y, Math.max(4, u * 0.008), boxH);
+  ctx2d.fillStyle = '#f4f3ef';
+  lines.forEach((l, i) => ctx2d.fillText(l, x + pad, y + pad * 0.6 + lh / 2 + i * lh));
+  ctx2d.restore();
+}
+document.fonts?.load(`700 48px ${TITLE_FONT}`).catch(() => {});
+
+function drawStroke(s, elapsed, fade, W, H) {
+  const pts = s.pts.filter(p => p.dt <= elapsed + 0.001);
+  if (!pts.length) return;
+  const lw = s.size * H / 720 * (s.tool === 'hl' ? 3 : 1);
+  ctx2d.save();
+  ctx2d.globalAlpha = (s.tool === 'hl' ? 0.38 : 1) * fade;
+  ctx2d.strokeStyle = ctx2d.fillStyle = s.color;
+  ctx2d.lineWidth = lw; ctx2d.lineCap = s.tool === 'hl' ? 'square' : 'round'; ctx2d.lineJoin = 'round';
+  const P = pts.map(p => [p.x * W, p.y * H]);
+  if (s.tool === 'arrow') {
+    if (P.length >= 2) {
+      const [a, b] = [P[0], P[P.length - 1]];
+      const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), head = Math.max(lw * 3.5, 14 * H / 720);
+      ctx2d.beginPath(); ctx2d.moveTo(a[0], a[1]);
+      ctx2d.lineTo(b[0] - Math.cos(ang) * head * 0.6, b[1] - Math.sin(ang) * head * 0.6); ctx2d.stroke();
+      ctx2d.beginPath(); ctx2d.moveTo(b[0], b[1]);
+      ctx2d.lineTo(b[0] - head * Math.cos(ang - 0.45), b[1] - head * Math.sin(ang - 0.45));
+      ctx2d.lineTo(b[0] - head * Math.cos(ang + 0.45), b[1] - head * Math.sin(ang + 0.45));
+      ctx2d.closePath(); ctx2d.fill();
+    }
+  } else if (P.length === 1) {
+    ctx2d.beginPath(); ctx2d.arc(P[0][0], P[0][1], lw / 2, 0, Math.PI * 2); ctx2d.fill();
+  } else {
+    ctx2d.beginPath(); ctx2d.moveTo(P[0][0], P[0][1]);
+    for (let i = 1; i < P.length - 1; i++) {
+      const mx = (P[i][0] + P[i + 1][0]) / 2, my = (P[i][1] + P[i + 1][1]) / 2;
+      ctx2d.quadraticCurveTo(P[i][0], P[i][1], mx, my);
+    }
+    const L = P[P.length - 1]; ctx2d.lineTo(L[0], L[1]); ctx2d.stroke();
+  }
+  ctx2d.restore();
+}
+function canvasPoint(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+}
+cv.addEventListener('pointerdown', e => {
+  if (!clips.length || exporting) return;
+  cv.setPointerCapture(e.pointerId);
+  const c = clips[cur], p = canvasPoint(e);
+  const src = globalT < c.vStart ? c.inP - (c.vStart - globalT) : c.video.currentTime;
+  drawing = { clipId: c.id, tool, color, size: +$('sizeIn').value, src,
+              hold: $('holdSel').value, pts: [{ ...p, dt: 0 }], t0: performance.now() };
+  if (tool === 'arrow') drawing.pts.push({ ...p, dt: 0 });
+  strokes.push(drawing);
+});
+cv.addEventListener('pointermove', e => {
+  if (!drawing) return;
+  const p = canvasPoint(e);
+  const dt = playing ? (performance.now() - drawing.t0) / 1000 : 0;
+  if (drawing.tool === 'arrow') drawing.pts[1] = { ...p, dt: 0 };
+  else drawing.pts.push({ ...p, dt });
+});
+const endStroke = () => { if (drawing) { delete drawing.t0; drawing = null; renderTimeline(); } };
+cv.addEventListener('pointerup', endStroke);
+cv.addEventListener('pointercancel', endStroke);
+
+// ---------- UI: clip bin ----------
+function renderBin() {
+  const bin = $('bin'); bin.innerHTML = '';
+  $('binHint').hidden = clips.length > 0;
+  clips.forEach((c, i) => {
+    const el = document.createElement('div');
+    el.className = 'clip'; el.style.setProperty('--c', c.color); el.dataset.id = c.id;
+    el.innerHTML = `
+      <div class="top">
+        <span class="num">${String(i + 1).padStart(2, '0')}</span>
+        <span class="name" title="${esc(c.name)}">${esc(c.name)}</span>
+        <span class="len">${fmt(c.len)}</span>
+        <button data-act="up" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button data-act="down" aria-label="Move down" ${i === clips.length - 1 ? 'disabled' : ''}>↓</button>
+        <button data-act="del" aria-label="Remove clip">✕</button>
+      </div>
+      <div class="trim">
+        Start <input id="in-${c.id}" type="number" step="0.1" min="0" max="${c.dur.toFixed(2)}" value="${c.inP.toFixed(1)}" data-act="in">
+        <button data-act="inHere" title="Set start to the playhead">here</button>
+        End <input id="out-${c.id}" type="number" step="0.1" min="0" max="${c.dur.toFixed(2)}" value="${c.outP.toFixed(1)}" data-act="out">
+        <button data-act="outHere" title="Set end to the playhead">here</button>
+      </div>
+      <div class="trim titlerow">
+        <input id="title-${c.id}" type="text" maxlength="80" placeholder="Title (optional)" value="${esc(c.title)}" data-act="title" aria-label="Title for clip ${i + 1}">
+        <select id="tstyle-${c.id}" data-act="tstyle" aria-label="Title style">
+          <option value="card" ${c.tStyle === 'card' ? 'selected' : ''}>Card before</option>
+          <option value="over" ${c.tStyle === 'over' ? 'selected' : ''}>Over clip</option>
+        </select>
+        <input id="tdur-${c.id}" type="number" min="0.5" max="10" step="0.5" value="${c.tDur}" data-act="tdur" aria-label="Title seconds"> s
+      </div>`;
+    bin.appendChild(el);
+  });
+  renderBinActive();
+}
+function renderBinActive() {
+  document.querySelectorAll('.clip').forEach(el => el.classList.toggle('active', clips[cur] && +el.dataset.id === clips[cur].id));
+  document.querySelectorAll('.seg').forEach((el, i) => el.classList.toggle('active', i === cur));
+}
+$('bin').addEventListener('click', e => {
+  const el = e.target.closest('.clip'); if (!el || exporting) return;
+  const i = clips.findIndex(c => c.id === +el.dataset.id), c = clips[i];
+  const act = e.target.dataset.act;
+  if (e.target.classList.contains('name')) return seek(c.gStart);
+  if (!act || ['in', 'out', 'title', 'tstyle', 'tdur'].includes(act)) return;
+  const here = clips[cur] === c ? c.video.currentTime : null;
+  if (act === 'up' || act === 'down') {
+    const j = act === 'up' ? i - 1 : i + 1;
+    const active = clips[cur];
+    [clips[i], clips[j]] = [clips[j], clips[i]];
+    cur = clips.indexOf(active);
+  } else if (act === 'del') {
+    pause(); c.video.pause(); c.video.remove(); URL.revokeObjectURL(c.url);
+    clips.splice(i, 1); strokes = strokes.filter(s => s.clipId !== c.id);
+    cur = 0; globalT = 0;
+    if (!clips.length) { $('stage').classList.add('empty'); fctx.clearRect(0, 0, frame.width, frame.height); }
+  } else if (act === 'inHere' || act === 'outHere') {
+    if (here === null) return toast('Move the playhead into this clip first.');
+    if (act === 'inHere') c.inP = Math.min(here, c.outP - 0.1); else c.outP = Math.max(here, c.inP + 0.1);
+  }
+  const keepLocal = clips[cur] ? clips[cur].video.currentTime : 0;
+  layout(); renderBin(); renderTimeline(); syncButtons();
+  if (clips.length) { const a = clips[cur]; seek(a.vStart + Math.min(Math.max(0, keepLocal - a.inP), a.outP - a.inP)); }
+});
+// Typing a title updates live without rebuilding the list (which would steal focus).
+$('bin').addEventListener('input', e => {
+  if (e.target.dataset.act !== 'title' || exporting) return;
+  const el = e.target.closest('.clip'), c = clips.find(c => c.id === +el.dataset.id);
+  c.title = e.target.value;
+  layout(); renderTimeline();
+  document.querySelectorAll('.clip').forEach((row, i) => row.querySelector('.len').textContent = fmt(clips[i].len));
+  if (!playing) seek(c.tStyle === 'card' ? c.gStart + Math.min(1, c.card / 2) : c.vStart + Math.min(1, c.tDur / 2));
+});
+$('bin').addEventListener('change', e => {
+  const act = e.target.dataset.act; if (!['in', 'out', 'tstyle', 'tdur'].includes(act)) return;
+  const c = clips.find(c => c.id === +e.target.closest('.clip').dataset.id);
+  if (act === 'tstyle') c.tStyle = e.target.value;
+  else if (act === 'tdur') { const v = parseFloat(e.target.value); c.tDur = isNaN(v) ? 2 : Math.min(10, Math.max(0.5, v)); }
+  else {
+    let v = parseFloat(e.target.value); if (isNaN(v)) v = act === 'in' ? 0 : c.dur;
+    if (act === 'in') c.inP = Math.max(0, Math.min(v, c.outP - 0.1));
+    else c.outP = Math.min(c.dur, Math.max(v, c.inP + 0.1));
+  }
+  pause(); layout(); renderBin(); renderTimeline();
+  seek(c.gStart);
+});
+
+// ---------- UI: timeline ----------
+function renderTimeline() {
+  const segs = $('segs'); segs.innerHTML = '';
+  clips.forEach(c => {
+    const d = document.createElement('div'); d.className = 'seg';
+    d.style.setProperty('--c', c.color); d.style.flex = `${c.len} 0 0`;
+    d.innerHTML = (c.card ? `<i style="width:${(c.card / c.len) * 100}%"></i>` : '') + `<span>${esc(c.title.trim() || c.name)}</span>`;
+    segs.appendChild(d);
+  });
+  const marks = $('marks'); marks.innerHTML = '';
+  if (total > 0) strokes.forEach(s => {
+    const w = strokeWindow(s); if (!w) return;
+    const m = document.createElement('div'); m.className = 'mark';
+    m.style.left = `calc(${(w.gs / total) * 100}% - 1px)`; marks.appendChild(m);
+  });
+  $('tTotal').textContent = fmt(total);
+  renderBinActive();
+}
+function updateClock() {
+  $('tNow').textContent = fmt(globalT);
+  $('playhead').style.left = total ? `${(globalT / total) * 100}%` : '0';
+  if (exporting) $('exportBar').style.width = `${(globalT / total) * 100}%`;
+}
+let scrubbing = false;
+const scrubTo = e => { const r = $('timeline').getBoundingClientRect(); seek(((e.clientX - r.left) / r.width) * total); };
+$('timeline').addEventListener('pointerdown', e => { if (!clips.length || exporting) return; scrubbing = true; $('timeline').setPointerCapture(e.pointerId); scrubTo(e); });
+$('timeline').addEventListener('pointermove', e => { if (scrubbing) scrubTo(e); });
+$('timeline').addEventListener('pointerup', () => scrubbing = false);
+
+// ---------- UI: tools ----------
+COLORS.forEach(col => {
+  const b = document.createElement('button'); b.className = 'swatch' + (col === color ? ' on' : '');
+  b.style.setProperty('--sw', col); b.setAttribute('aria-label', 'Color ' + col);
+  b.onclick = () => { color = col; document.querySelectorAll('.swatch').forEach(x => x.classList.toggle('on', x === b)); };
+  $('swatches').appendChild(b);
+});
+document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => {
+  tool = b.dataset.tool; document.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('on', x === b));
+});
+$('undoBtn').onclick = () => { strokes.pop(); renderTimeline(); };
+$('clearBtn').onclick = () => {
+  strokes = strokes.filter(s => { const w = strokeWindow(s); return !(w && globalT >= w.gs - 0.03 && globalT <= w.end); });
+  renderTimeline();
+};
+$('playBtn').onclick = () => playing ? pause() : play();
+$('addBtn').onclick = () => $('fileIn').click();
+$('fileIn').onchange = e => { addFiles([...e.target.files]); e.target.value = ''; };
+$('resSel').onchange = applySize;
+function syncButtons() {
+  $('playBtn').textContent = playing ? '❚❚ Pause' : '▶ Play';
+  $('playBtn').disabled = !clips.length || exporting;
+  $('exportBtn').disabled = !clips.length || exporting;
+  $('addBtn').disabled = exporting;
+  $('resSel').disabled = exporting;
+}
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, select')) return;
+  if (e.code === 'Space') { e.preventDefault(); if (!exporting) playing ? pause() : play(); }
+  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); $('undoBtn').click(); }
+  else if (e.key === 'ArrowLeft' && !exporting) seek(globalT - 1);
+  else if (e.key === 'ArrowRight' && !exporting) seek(globalT + 1);
+});
+const stage = $('stage');
+['dragenter', 'dragover'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); stage.classList.add('dragover'); }));
+['dragleave', 'drop'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); stage.classList.remove('dragover'); }));
+document.addEventListener('drop', e => addFiles([...e.dataTransfer.files]));
+
+// ---------- export ----------
+function pickMime() {
+  const opts = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  return opts.find(m => MediaRecorder.isTypeSupported(m)) || '';
+}
+$('exportBtn').onclick = async () => {
+  if (!clips.length) return;
+  ensureAudio();
+  pause(); seek(0, false);
+  await once(clips[0].video, 'seeked').catch(() => {});
+  grabFrame();
+  const mime = pickMime();
+  const stream = cv.captureStream(30);
+  recDest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+  recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  chunks = [];
+  recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+  recorder.onstop = () => {
+    stream.getVideoTracks().forEach(t => t.stop());
+    if (recorder.cancelled) return;
+    const type = recorder.mimeType || mime || 'video/webm';
+    const blob = new Blob(chunks, { type });
+    const ext = type.includes('mp4') ? 'mp4' : 'webm';
+    const d = new Date(), stamp = d.toISOString().slice(0, 16).replace(/[-:T]/g, '');
+    const a = $('dlLink');
+    if (a.href.startsWith('blob:')) URL.revokeObjectURL(a.href);
+    a.href = URL.createObjectURL(blob); a.download = `clip-stitch-${stamp}.${ext}`;
+    $('doneMsg').textContent = `Saved ${a.download} (${(blob.size / 1048576).toFixed(1)} MB) to your Downloads folder.`;
+    $('doneRow').hidden = false;
+    a.click();
+  };
+  exporting = true; $('exportRow').hidden = false; $('doneRow').hidden = true;
+  $('exportMsg').textContent = `Recording in real time (${fmt(total)}). Keep this tab open and visible.`;
+  syncButtons();
+  recorder.start(1000);
+  play();
+};
+function finishExport() {
+  exporting = false; $('exportRow').hidden = true; syncButtons();
+  setTimeout(() => recorder && recorder.state !== 'inactive' && recorder.stop(), 150);  // let the last frame land
+}
+// The browser stops repainting hidden tabs, so hold the recording until the tab is back.
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (!exporting || !recorder) return;
+  if (document.hidden && recorder.state === 'recording') { clips[cur].video.pause(); recorder.pause(); hiddenAt = performance.now(); }
+  else if (!document.hidden && recorder.state === 'paused') {
+    recorder.resume();
+    if (inCard) cardT0 += performance.now() - hiddenAt; else clips[cur].video.play();
+    toast('Export resumed. Keep this tab in front until it finishes.');
+  }
+});
+$('cancelBtn').onclick = () => {
+  if (!recorder) return;
+  recorder.cancelled = true; recorder.stop();
+  exporting = false; pause(); $('exportRow').hidden = true; syncButtons();
+  toast('Export cancelled.');
+};
+
+layout(); renderTimeline(); syncButtons();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
