@@ -86,6 +86,10 @@ main { display: flex; flex-direction: column; min-height: 0; min-width: 0; paddi
 }
 .stage canvas { max-width: 100%; max-height: 100%; display: block; touch-action: none; cursor: crosshair; }
 .stage.empty canvas { display: none; }
+.text-edit {
+  position: absolute; margin: 0; border: 1px dashed var(--accent); border-radius: 4px; outline: none;
+  resize: none; overflow: hidden; white-space: pre; line-height: 1.2; z-index: 2;
+}
 .drop {
   position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted);
   pointer-events: none; padding: 20px;
@@ -199,6 +203,7 @@ button.rec { color: var(--danger); }
     </div>
     <div id="stage" class="stage empty">
       <canvas id="cv" width="1280" height="720"></canvas>
+      <textarea id="textEdit" class="text-edit" wrap="off" rows="1" spellcheck="false" aria-label="Text box" hidden></textarea>
       <div class="drop" id="dropMsg"><div><strong>Drop video files here</strong>or use “+ Add clips”. Nothing is uploaded; everything stays on this computer.</div></div>
     </div>
 
@@ -207,6 +212,7 @@ button.rec { color: var(--danger); }
         <button data-tool="pen" class="on">Pen</button>
         <button data-tool="hl">Highlighter</button>
         <button data-tool="arrow">Arrow</button>
+        <button data-tool="text" title="Click to add text; drag a text box to move it, click it to edit (T)">Text</button>
         <button data-tool="eraser" title="Click or drag over a drawing to remove it (E)">Eraser</button>
       </div>
       <span class="sep"></span>
@@ -240,6 +246,7 @@ button.rec { color: var(--danger); }
     <div class="transport">
       <button id="playBtn" disabled>▶ Play</button>
       <span class="time mono"><b id="tNow">0:00.0</b> / <span id="tTotal">0:00.0</span></span>
+      <button id="muteBtn" aria-pressed="false" title="Silence playback while editing; exports keep their sound (M)">🔊 Sound</button>
     </div>
     <div class="timeline" id="timeline">
       <div class="segs" id="segs"></div>
@@ -397,6 +404,9 @@ function ensureAudio() {
   if (!audioCtx) {
     audioCtx = new AudioContext();
     recDest = audioCtx.createMediaStreamDestination();
+    speaker = audioCtx.createGain();
+    speaker.gain.value = muted ? 0 : 1;
+    speaker.connect(audioCtx.destination);
     clips.forEach(connectAudio);
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -404,8 +414,18 @@ function ensureAudio() {
 function connectAudio(c) {
   if (c.node) return;
   c.node = audioCtx.createMediaElementSource(c.video);
-  c.node.connect(audioCtx.destination);
+  c.node.connect(speaker);
   c.node.connect(recDest);
+}
+// Mute silences the speakers only; the export taps the audio before this gain, so it keeps its sound.
+let speaker = null, muted = false;
+function setMuted(m) {
+  muted = m;
+  ensureAudio();
+  speaker.gain.value = m ? 0 : 1;
+  $('muteBtn').textContent = m ? '🔇 Muted' : '🔊 Sound';
+  $('muteBtn').classList.toggle('on', m);
+  $('muteBtn').setAttribute('aria-pressed', m);
 }
 
 // ---------- playback ----------
@@ -512,6 +532,7 @@ function compose() {
     else if (c.tStyle === 'over' && globalT >= c.vStart && globalT <= c.vStart + c.tDur) drawCaption(c, globalT - c.vStart, W, H);
   }
   for (const s of strokes) {
+    if (textEdit && s === textEdit.s) continue;   // the editor box stands in for it
     if (s === drawing) { drawStroke(s, Infinity, 1, W, H); continue; }   // always show the stroke under the pen
     const v = visibleNow(s);
     if (!v) continue;
@@ -584,7 +605,86 @@ function drawCaption(c, t, W, H) {
 document.fonts?.load(`700 48px ${TITLE_FONT}`).catch(() => {});
 
 const strokeWidth = (s, H) => s.size * H / 720 * (s.tool === 'hl' ? 3 : 1);
+// ---------- text boxes ----------
+const TEXT_FONT = fs => `700 ${fs}px ${TITLE_FONT}`;
+const textSize = (s, H) => s.size * 6 * H / 720;
+// Dark plate behind light text, light plate behind dark text, so it reads over any footage.
+function plate(hex) {
+  const n = parseInt(hex.slice(1), 16), lum = (0.299 * (n >> 16) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) / 255;
+  return lum < 0.4 ? 'rgba(244, 243, 239, 0.88)' : 'rgba(14, 15, 18, 0.78)';
+}
+// Box geometry in canvas pixels; pts[0] is the top-left corner.
+function textBox(s, W, H) {
+  const fs = textSize(s, H), pad = fs * 0.35, lh = fs * 1.2, lines = s.text.split('\n');
+  ctx2d.font = TEXT_FONT(fs);
+  const w = Math.max(...lines.map(l => ctx2d.measureText(l).width)) + pad * 2;
+  return { x: s.pts[0].x * W, y: s.pts[0].y * H, w, h: lines.length * lh + pad * 2, pad, lh, lines };
+}
+function drawText(s, fade, W, H, tint) {
+  const b = textBox(s, W, H);
+  ctx2d.save();
+  if (tint) {
+    const o = 4 * H / 720;
+    ctx2d.strokeStyle = tint; ctx2d.lineWidth = 3 * H / 720; ctx2d.setLineDash([10 * H / 720, 6 * H / 720]);
+    ctx2d.strokeRect(b.x - o, b.y - o, b.w + o * 2, b.h + o * 2);
+  } else {
+    ctx2d.globalAlpha = fade;
+    ctx2d.fillStyle = plate(s.color);
+    ctx2d.beginPath();
+    ctx2d.roundRect ? ctx2d.roundRect(b.x, b.y, b.w, b.h, b.pad * 0.6) : ctx2d.rect(b.x, b.y, b.w, b.h);
+    ctx2d.fill();
+    ctx2d.fillStyle = s.color; ctx2d.textBaseline = 'middle';
+    b.lines.forEach((l, i) => ctx2d.fillText(l, b.x + b.pad, b.y + b.pad + b.lh * (i + 0.5)));
+  }
+  ctx2d.restore();
+}
+// The editor is a textarea laid over the canvas at the box's spot, styled to match what gets drawn.
+let textEdit = null, textDrag = null;   // textEdit: {s, isNew}; textDrag: {s?, from, pts, moved}
+function placeText() {
+  const s = textEdit.s, ta = $('textEdit');
+  const r = cv.getBoundingClientRect(), sr = $('stage').getBoundingClientRect(), k = r.height / cv.height;
+  const fs = textSize(s, cv.height) * k;
+  Object.assign(ta.style, {
+    left: `${r.left - sr.left + s.pts[0].x * r.width}px`, top: `${r.top - sr.top + s.pts[0].y * r.height}px`,
+    font: TEXT_FONT(fs), lineHeight: '1.2', padding: `${fs * 0.35 - 1}px`,
+    color: s.color, background: plate(s.color), width: '0px', height: '0px',
+  });
+  ta.style.width = `${Math.max(ta.scrollWidth + fs * 0.3, fs * 3)}px`;
+  ta.style.height = `${ta.scrollHeight + 2}px`;
+}
+function openText(s, isNew) {
+  textEdit = { s, isNew };
+  const ta = $('textEdit');
+  ta.value = s.text; ta.hidden = false;
+  placeText();
+  ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+// keep: save what was typed; otherwise leave the box as it was (and drop a new one).
+function closeText(keep) {
+  const t = textEdit; if (!t) return;
+  textEdit = null;
+  const ta = $('textEdit'), text = ta.value.replace(/\s+$/, '');
+  ta.hidden = true;
+  if (t.isNew) {
+    if (keep && text.trim()) { t.s.text = text; strokes.push(t.s); history.push({ add: t.s }); }
+    else pruneFreezes();   // a freeze made for this box has nothing on it
+  } else if (keep && !text.trim()) {
+    strokes = strokes.filter(x => x !== t.s); commitErase([t.s]);
+  } else if (keep && text !== t.s.text) {
+    history.push({ edit: t.s, prev: { text: t.s.text, pts: t.s.pts } });
+    t.s.text = text;
+  }
+  renderTimeline();
+}
+$('textEdit').addEventListener('input', placeText);
+$('textEdit').addEventListener('blur', () => closeText(true));
+$('textEdit').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.preventDefault(); closeText(false); }
+  else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); closeText(true); }
+});
+
 function drawStroke(s, elapsed, fade, W, H, tint) {
+  if (s.tool === 'text') return drawText(s, fade, W, H, tint);
   const pts = s.pts.filter(p => p.dt <= elapsed + 0.001);
   if (!pts.length) return;
   const lw = strokeWidth(s, H) + (tint ? 4 * H / 720 : 0);
@@ -629,6 +729,11 @@ function hitStroke(p) {
   for (let i = strokes.length - 1; i >= 0; i--) {
     const s = strokes[i], v = visibleNow(s);
     if (!v) continue;
+    if (s.tool === 'text') {
+      const b = textBox(s, W, H);
+      if (x >= b.x - slack && x <= b.x + b.w + slack && y >= b.y - slack && y <= b.y + b.h + slack) return s;
+      continue;
+    }
     const P = s.pts.filter(q => q.dt <= v.elapsed + 0.001).map(q => [q.x * W, q.y * H]);
     if (s.tool === 'arrow' && P.length > 2) P.splice(1, P.length - 2);
     const reach = strokeWidth(s, H) / 2 + slack;
@@ -659,12 +764,13 @@ function commitErase(erased) {
   renderTimeline();
 }
 
-// Undo history: {add: stroke} or {erased: [strokes], fz: [freezes removed with them]}
+// Undo history: {add: stroke}, {edit: text box, prev: {text, pts}} or {erased: [strokes], fz: [freezes removed with them]}
 let history = [];
 function undo() {
   const h = history.pop();
   if (!h) return;
   if (h.add) { strokes = strokes.filter(s => s !== h.add); pruneFreezes(); }
+  else if (h.edit) Object.assign(h.edit, h.prev);
   else {
     freezes.push(...h.fz); strokes.push(...h.erased);
     layout(); refreshLens();
@@ -673,26 +779,36 @@ function undo() {
   renderTimeline();
 }
 
-cv.addEventListener('pointerdown', e => {
-  if (!clips.length || exporting) return;
-  cv.setPointerCapture(e.pointerId);
-  if (tool === 'eraser') { erasing = { erased: [] }; eraseAt(canvasPoint(e)); return; }
-  const freezeOn = $('freezeChk').checked;
-  if (playing && freezeOn) pause();
-  const c = clips[cur], p = canvasPoint(e);
+// Where a new drawing attaches. With Freeze frame on, a frozen frame is inserted here first.
+// Stamped from the playhead itself so it shows at exactly the frame on screen.
+function anchorHere(c) {
   let loc = locate(globalT);
-  if (freezeOn && !loc.freeze && !loc.inCard && loc.local < c.outP - 0.01) {
-    // Insert a frozen frame right here; the playhead is already at its start.
+  if ($('freezeChk').checked && !loc.freeze && !loc.inCard && loc.local < c.outP - 0.01) {
+    // The playhead is already at the new freeze's start.
     const f = { id: nextId++, clipId: c.id, src: loc.local, dur: freezeLen() };
     freezes.push(f);
     layout(); globalT = f.g; loc = { freeze: f };
     renderTimeline(); refreshLens();
   }
+  return loc.freeze ? { freezeId: loc.freeze.id, fo: Math.max(0, globalT - loc.freeze.g) }
+    : { src: loc.inCard ? c.inP - (c.vStart - globalT) : loc.local };
+}
+cv.addEventListener('pointerdown', e => {
+  if (!clips.length || exporting) return;
+  if (textEdit) { e.preventDefault(); closeText(true); return; }   // a click outside the box finishes it
+  cv.setPointerCapture(e.pointerId);
+  const c = clips[cur], p = canvasPoint(e);
+  if (tool === 'eraser') { erasing = { erased: [] }; eraseAt(p); return; }
+  if (tool === 'text') {
+    e.preventDefault();   // keep focus free for the editor
+    if (playing) pause();   // typing needs a still frame
+    const hit = hitStroke(p);
+    textDrag = { s: hit && hit.tool === 'text' ? hit : null, from: p, pts: hit && hit.pts, moved: false };
+    return;
+  }
+  if (playing && $('freezeChk').checked) pause();
   drawing = { clipId: c.id, tool, color, size: +$('sizeIn').value,
-              hold: $('holdSel').value, pts: [{ ...p, dt: 0 }], t0: performance.now() };
-  // Stamp the stroke from the playhead itself so it shows at exactly the frame on screen.
-  if (loc.freeze) { drawing.freezeId = loc.freeze.id; drawing.fo = Math.max(0, globalT - loc.freeze.g); }
-  else drawing.src = loc.inCard ? c.inP - (c.vStart - globalT) : loc.local;
+              hold: $('holdSel').value, pts: [{ ...p, dt: 0 }], t0: performance.now(), ...anchorHere(c) };
   if (tool === 'arrow') drawing.pts.push({ ...p, dt: 0 });
   strokes.push(drawing);
 });
@@ -736,6 +852,17 @@ $('fzRemove').onclick = () => {
 $('freezeChk').onchange = () => { $('holdSel').disabled = $('freezeChk').checked; };
 cv.addEventListener('pointermove', e => {
   if (erasing) return eraseAt(canvasPoint(e));
+  if (textDrag) {
+    const p = canvasPoint(e), r = cv.getBoundingClientRect(), d = textDrag;
+    if (!d.moved && Math.hypot((p.x - d.from.x) * r.width, (p.y - d.from.y) * r.height) > 4) d.moved = !!d.s;
+    if (d.moved) d.s.pts = [{ x: d.pts[0].x + p.x - d.from.x, y: d.pts[0].y + p.y - d.from.y, dt: 0 }];
+    return;
+  }
+  if (tool === 'text' && !exporting && !textEdit) {
+    const h = clips.length && hitStroke(canvasPoint(e));
+    cv.style.cursor = h && h.tool === 'text' ? 'move' : 'text';
+    return;
+  }
   if (tool === 'eraser' && !exporting) {
     hoverStroke = hitStroke(canvasPoint(e));
     cv.style.cursor = hoverStroke ? 'pointer' : 'default';
@@ -749,6 +876,16 @@ cv.addEventListener('pointermove', e => {
 });
 const endStroke = () => {
   if (erasing) { commitErase(erasing.erased); erasing = null; }
+  if (textDrag) {
+    const d = textDrag; textDrag = null;
+    if (d.moved) history.push({ edit: d.s, prev: { text: d.s.text, pts: d.pts } });
+    else if (d.s) openText(d.s, false);
+    else {
+      const c = clips[cur];
+      openText({ clipId: c.id, tool: 'text', color, size: +$('sizeIn').value, hold: $('holdSel').value,
+                 text: '', pts: [{ ...d.from, dt: 0 }], ...anchorHere(c) }, true);
+    }
+  }
   if (drawing) { delete drawing.t0; history.push({ add: drawing }); drawing = null; renderTimeline(); }
 };
 cv.addEventListener('pointerup', endStroke);
@@ -882,10 +1019,11 @@ COLORS.forEach(col => {
 function setTool(t) {
   tool = t; hoverStroke = null;
   document.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('on', x.dataset.tool === t));
-  cv.style.cursor = t === 'eraser' ? 'default' : '';
+  cv.style.cursor = t === 'eraser' ? 'default' : t === 'text' ? 'text' : '';
 }
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
 $('undoBtn').onclick = undo;
+$('muteBtn').onclick = () => setMuted(!muted);
 $('clearBtn').onclick = () => {
   const gone = strokes.filter(s => visibleNow(s));
   strokes = strokes.filter(s => !gone.includes(s));
@@ -904,10 +1042,12 @@ function syncButtons() {
   $('resSel').disabled = exporting;
 }
 document.addEventListener('keydown', e => {
-  if (e.target.matches('input, select')) return;
+  if (e.target.matches('input, select, textarea')) return;
   if (e.code === 'Space') { e.preventDefault(); if (!exporting) playing ? pause() : play(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); $('undoBtn').click(); }
   else if (e.key.toLowerCase() === 'e' && !e.ctrlKey && !e.metaKey) setTool(tool === 'eraser' ? 'pen' : 'eraser');
+  else if (e.key.toLowerCase() === 't' && !e.ctrlKey && !e.metaKey) setTool(tool === 'text' ? 'pen' : 'text');
+  else if (e.key.toLowerCase() === 'm' && !e.ctrlKey && !e.metaKey) setMuted(!muted);
   else if (e.key === 'ArrowLeft' && !exporting) seek(globalT - 1);
   else if (e.key === 'ArrowRight' && !exporting) seek(globalT + 1);
 });
