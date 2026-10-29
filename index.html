@@ -528,8 +528,10 @@ function compose() {
   ctx2d.drawImage(frame, 0, 0);
   const c = clips[cur];
   if (c && c.title.trim()) {
-    if (c.tStyle === 'card' && globalT < c.vStart) drawCard(c, globalT - c.gStart, W, H);
-    else if (c.tStyle === 'over' && globalT >= c.vStart && globalT <= c.vStart + c.tDur) drawCaption(c, globalT - c.vStart, W, H);
+    // While paused, show the title fully in rather than mid-fade (at 0:00 it would still be invisible).
+    const still = t => playing || exporting ? t : Math.max(t, Math.min(0.8, c.tDur - 0.4));
+    if (c.tStyle === 'card' && globalT < c.vStart) drawCard(c, still(globalT - c.gStart), W, H);
+    else if (c.tStyle === 'over' && globalT >= c.vStart && globalT <= c.vStart + c.tDur) drawCaption(c, still(globalT - c.vStart), W, H);
   }
   for (const s of strokes) {
     if (textEdit && s === textEdit.s) continue;   // the editor box stands in for it
@@ -965,8 +967,10 @@ $('bin').addEventListener('input', e => {
   if (!playing) seek(c.tStyle === 'card' ? c.gStart + Math.min(1, c.card / 2) : c.vStart + Math.min(1, c.tDur / 2));
 });
 $('bin').addEventListener('change', e => {
-  const act = e.target.dataset.act; if (!['in', 'out', 'tstyle', 'tdur'].includes(act)) return;
+  // A finished title edit puts the playhead back at the clip's start, so Play shows the whole title.
+  const act = e.target.dataset.act; if (!['in', 'out', 'title', 'tstyle', 'tdur'].includes(act)) return;
   const c = clips.find(c => c.id === +e.target.closest('.clip').dataset.id);
+  if (act === 'title') { if (!playing && !exporting) seek(c.gStart); return; }
   if (act === 'tstyle') c.tStyle = e.target.value;
   else if (act === 'tdur') { const v = parseFloat(e.target.value); c.tDur = isNaN(v) ? 2 : Math.min(10, Math.max(0.5, v)); }
   else {
