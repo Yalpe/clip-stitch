@@ -135,7 +135,15 @@ main { display: flex; flex-direction: column; min-height: 0; min-width: 0; paddi
   aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; }
   .stage { min-height: 240px; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.rec-panel { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--danger); border-radius: 8px; }
+.rec-panel > div { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.rec-panel label { display: flex; gap: 6px; align-items: center; }
+.rec-panel .note { color: var(--muted); font-size: 12.5px; flex-basis: 100%; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+.rec-live { color: var(--danger); font-weight: 600; }
+button.rec { color: var(--danger); }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
 <body>
@@ -143,6 +151,7 @@ main { display: flex; flex-direction: column; min-height: 0; min-width: 0; paddi
   <header>
     <h1>Clip <span>Stitch</span></h1>
     <button id="addBtn" class="primary">+ Add clips</button>
+    <button id="recBtn" class="rec">● Record screen</button>
     <input id="fileIn" type="file" accept="video/*" multiple hidden>
     <span class="spacer"></span>
     <label for="resSel">Output size
@@ -170,6 +179,23 @@ main { display: flex; flex-direction: column; min-height: 0; min-width: 0; paddi
   </aside>
 
   <main>
+    <div class="rec-panel" id="recPanel" hidden>
+      <div id="recSetup">
+        <strong>Record your screen</strong>
+        <label for="recMic"><input id="recMic" type="checkbox" checked> Microphone</label>
+        <label for="recSys"><input id="recSys" type="checkbox" checked> Computer sound</label>
+        <label for="recSave"><input id="recSave" type="checkbox"> Also save the raw recording</label>
+        <button id="recStart" class="primary">Start recording</button>
+        <button id="recClose">Cancel</button>
+        <span class="note">Your browser will ask what to share. For computer sound, pick a whole screen or a tab and turn on “Share audio”. A single app window can't share sound.</span>
+      </div>
+      <div id="recLive" hidden>
+        <span class="rec-dot" aria-hidden="true"></span>
+        <span class="rec-live">Recording <span id="recTime" class="mono">0:00</span></span>
+        <span id="recSources" class="note" style="flex-basis:auto"></span>
+        <button id="recStop" class="primary">Stop recording</button>
+      </div>
+    </div>
     <div id="stage" class="stage empty">
       <canvas id="cv" width="1280" height="720"></canvas>
       <div class="drop" id="dropMsg"><div><strong>Drop video files here</strong>or use “+ Add clips”. Nothing is uploaded; everything stays on this computer.</div></div>
@@ -793,8 +819,9 @@ $('resSel').onchange = applySize;
 function syncButtons() {
   $('playBtn').textContent = playing ? '❚❚ Pause' : '▶ Play';
   $('playBtn').disabled = !clips.length || exporting;
-  $('exportBtn').disabled = !clips.length || exporting;
+  $('exportBtn').disabled = !clips.length || exporting || !!screenRec;
   $('addBtn').disabled = exporting;
+  $('recBtn').disabled = exporting || !!screenRec;
   $('resSel').disabled = exporting;
 }
 document.addEventListener('keydown', e => {
@@ -810,6 +837,85 @@ const stage = $('stage');
 document.addEventListener('drop', e => addFiles([...e.dataTransfer.files]));
 
 // ---------- export ----------
+// ---------- screen recording ----------
+// The recording becomes a normal clip; browser-made files report no length at first, which addFiles handles.
+let screenRec = null;   // {recorder, streams, mixCtx, timer, started}
+$('recBtn').onclick = () => {
+  if (!navigator.mediaDevices?.getDisplayMedia) return toast("This browser can't record the screen. Use Chrome or Edge on a computer.", true);
+  $('recPanel').hidden = false; $('recSetup').hidden = false; $('recLive').hidden = true;
+};
+$('recClose').onclick = () => { $('recPanel').hidden = true; };
+$('recStart').onclick = async () => {
+  const wantMic = $('recMic').checked, wantSys = $('recSys').checked;
+  let display;
+  try {
+    display = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 30 }, audio: wantSys, systemAudio: wantSys ? 'include' : 'exclude', selfBrowserSurface: 'exclude',
+    });
+  } catch (e) {
+    if (e.name !== 'NotAllowedError') toast(`Couldn't start screen capture: ${e.message}`, true);
+    return;
+  }
+  let mic = null;
+  if (wantMic) {
+    try { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+    catch { toast('The microphone is blocked, so this recording has no narration. Allow it from the icon in the address bar.', true); }
+  }
+  // Mix screen sound and mic into one track; a single source goes straight through.
+  const tracks = display.getVideoTracks();
+  const sources = [display, mic].filter(s => s && s.getAudioTracks().length);
+  let mixCtx = null;
+  if (sources.length === 1) tracks.push(sources[0].getAudioTracks()[0]);
+  else if (sources.length > 1) {
+    mixCtx = new AudioContext();
+    const dest = mixCtx.createMediaStreamDestination();
+    sources.forEach(s => mixCtx.createMediaStreamSource(s).connect(dest));
+    tracks.push(dest.stream.getAudioTracks()[0]);
+  }
+  const heard = [display.getAudioTracks().length && 'computer sound', mic?.getAudioTracks().length && 'microphone'].filter(Boolean);
+  $('recSources').textContent = heard.length ? `with ${heard.join(' and ')}` : 'no sound';
+  if (wantSys && !display.getAudioTracks().length) toast('No computer sound: what you shared has no audio, or “Share audio” was off.');
+
+  const mime = pickMime();
+  const recorder = new MediaRecorder(new MediaStream(tracks), { mimeType: mime, videoBitsPerSecond: 6_000_000 });
+  const recChunks = [];
+  recorder.ondataavailable = e => e.data.size && recChunks.push(e.data);
+  recorder.onstop = () => finishScreenRec(recChunks, recorder.mimeType || mime);
+  display.getVideoTracks()[0].addEventListener('ended', stopScreenRec);   // the browser's own "Stop sharing" bar
+  screenRec = { recorder, streams: [display, mic].filter(Boolean), mixCtx, started: Date.now() };
+  screenRec.timer = setInterval(() => {
+    const s = Math.floor((Date.now() - screenRec.started) / 1000);
+    $('recTime').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, 250);
+  $('recTime').textContent = '0:00';
+  $('recSetup').hidden = true; $('recLive').hidden = false;
+  pause(); syncButtons();
+  recorder.start(1000);
+};
+function stopScreenRec() {
+  if (screenRec?.recorder.state === 'recording') screenRec.recorder.stop();
+}
+$('recStop').onclick = stopScreenRec;
+async function finishScreenRec(recChunks, type) {
+  const { streams, mixCtx, timer } = screenRec;
+  clearInterval(timer);
+  streams.forEach(s => s.getTracks().forEach(t => t.stop()));
+  mixCtx?.close();
+  screenRec = null;
+  $('recPanel').hidden = true; syncButtons();
+  if (!recChunks.length) return toast('The recording was empty.', true);
+  const ext = type.includes('mp4') ? 'mp4' : 'webm';
+  const d = new Date(), stamp = `${d.getHours()}h${String(d.getMinutes()).padStart(2, '0')}`;
+  const file = new File(recChunks, `Screen recording ${stamp}.${ext}`, { type: type.split(';')[0] });
+  if ($('recSave').checked) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+  await addFiles([file]);
+  toast(`Added “${file.name}” to your clips.`);
+}
+
 function pickMime() {
   const opts = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
   return opts.find(m => MediaRecorder.isTypeSupported(m)) || '';
