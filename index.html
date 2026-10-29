@@ -175,7 +175,8 @@ button.rec { color: var(--danger); }
     <p class="hint">Pause and draw: the drawing appears at that moment and stays for the time you pick under "Show for".
       Draw while it plays: your strokes are replayed exactly as you drew them.</p>
     <p class="hint">Tick "Freeze frame" to stop the video on that frame while you draw. The exported video holds the still image, with your drawings, for the seconds you set, then carries on. The timeline shows freezes as striped blocks.</p>
-    <p class="hint"><kbd>Space</kbd> play / pause &nbsp; <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp; <kbd>←</kbd><kbd>→</kbd> step 1 s</p>
+    <p class="hint">To remove one drawing, pick the Eraser and click it, or drag across several. The drawing under the eraser is outlined in red first. Undo brings back anything you erased.</p>
+    <p class="hint"><kbd>Space</kbd> play / pause &nbsp; <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp; <kbd>E</kbd> eraser &nbsp; <kbd>←</kbd><kbd>→</kbd> step 1 s</p>
   </aside>
 
   <main>
@@ -206,6 +207,7 @@ button.rec { color: var(--danger); }
         <button data-tool="pen" class="on">Pen</button>
         <button data-tool="hl">Highlighter</button>
         <button data-tool="arrow">Arrow</button>
+        <button data-tool="eraser" title="Click or drag over a drawing to remove it (E)">Eraser</button>
       </div>
       <span class="sep"></span>
       <div class="group" id="swatches" role="group" aria-label="Color"></div>
@@ -511,14 +513,20 @@ function compose() {
   }
   for (const s of strokes) {
     if (s === drawing) { drawStroke(s, Infinity, 1, W, H); continue; }   // always show the stroke under the pen
-    const win = strokeWindow(s);
-    if (!win) continue;
-    const t = globalT;
-    if (t < win.gs - 0.03 || t > win.end) continue;
-    const elapsed = t - win.gs;
-    const fade = isFinite(win.end) && s.hold !== 'clip' ? Math.min(1, (win.end - t) / 0.25) : 1;
-    drawStroke(s, s === drawing ? Infinity : elapsed, fade, W, H);
+    const v = visibleNow(s);
+    if (!v) continue;
+    drawStroke(s, v.elapsed, v.fade, W, H);
+    if (s === hoverStroke && !exporting) drawStroke(s, v.elapsed, 1, W, H, '#ff4d4d');   // eraser target
   }
+}
+// How much of a stroke is on screen right now, or null if it isn't.
+function visibleNow(s) {
+  const win = strokeWindow(s);
+  if (!win) return null;
+  const t = globalT;
+  if (t < win.gs - 0.03 || t > win.end) return null;
+  const fade = isFinite(win.end) && s.hold !== 'clip' ? Math.min(1, (win.end - t) / 0.25) : 1;
+  return { elapsed: t - win.gs, fade };
 }
 // ---------- titles ----------
 const TITLE_FONT = '"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif';
@@ -575,13 +583,15 @@ function drawCaption(c, t, W, H) {
 }
 document.fonts?.load(`700 48px ${TITLE_FONT}`).catch(() => {});
 
-function drawStroke(s, elapsed, fade, W, H) {
+const strokeWidth = (s, H) => s.size * H / 720 * (s.tool === 'hl' ? 3 : 1);
+function drawStroke(s, elapsed, fade, W, H, tint) {
   const pts = s.pts.filter(p => p.dt <= elapsed + 0.001);
   if (!pts.length) return;
-  const lw = s.size * H / 720 * (s.tool === 'hl' ? 3 : 1);
+  const lw = strokeWidth(s, H) + (tint ? 4 * H / 720 : 0);
   ctx2d.save();
-  ctx2d.globalAlpha = (s.tool === 'hl' ? 0.38 : 1) * fade;
-  ctx2d.strokeStyle = ctx2d.fillStyle = s.color;
+  ctx2d.globalAlpha = tint ? 0.6 : (s.tool === 'hl' ? 0.38 : 1) * fade;
+  ctx2d.strokeStyle = ctx2d.fillStyle = tint || s.color;
+  if (tint) ctx2d.setLineDash([lw * 1.5, lw]);
   ctx2d.lineWidth = lw; ctx2d.lineCap = s.tool === 'hl' ? 'square' : 'round'; ctx2d.lineJoin = 'round';
   const P = pts.map(p => [p.x * W, p.y * H]);
   if (s.tool === 'arrow') {
@@ -611,9 +621,62 @@ function canvasPoint(e) {
   const r = cv.getBoundingClientRect();
   return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
 }
+// ---------- eraser ----------
+// Topmost drawing on screen under point p (normalized coords), or null.
+function hitStroke(p) {
+  const W = cv.width, H = cv.height, r = cv.getBoundingClientRect();
+  const x = p.x * W, y = p.y * H, slack = 8 * W / r.width;   // 8 screen pixels of leeway
+  for (let i = strokes.length - 1; i >= 0; i--) {
+    const s = strokes[i], v = visibleNow(s);
+    if (!v) continue;
+    const P = s.pts.filter(q => q.dt <= v.elapsed + 0.001).map(q => [q.x * W, q.y * H]);
+    if (s.tool === 'arrow' && P.length > 2) P.splice(1, P.length - 2);
+    const reach = strokeWidth(s, H) / 2 + slack;
+    if (P.length === 1 && Math.hypot(x - P[0][0], y - P[0][1]) <= reach) return s;
+    for (let j = 1; j < P.length; j++) if (distToSeg(x, y, P[j - 1], P[j]) <= reach) return s;
+  }
+  return null;
+}
+function distToSeg(x, y, [ax, ay], [bx, by]) {
+  const dx = bx - ax, dy = by - ay, len = dx * dx + dy * dy;
+  const t = len ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len)) : 0;
+  return Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+}
+let hoverStroke = null, erasing = null;   // erasing: {erased:[]} during an eraser drag
+function eraseAt(p) {
+  const s = hitStroke(p);
+  if (!s) return;
+  strokes = strokes.filter(x => x !== s);
+  erasing.erased.push(s);
+  hoverStroke = null;
+}
+// Remove strokes as one undoable step; freezes left empty go too, and come back on undo.
+function commitErase(erased) {
+  if (!erased.length) return;
+  const before = freezes.slice();
+  pruneFreezes();
+  history.push({ erased, fz: before.filter(f => !freezes.includes(f)) });
+  renderTimeline();
+}
+
+// Undo history: {add: stroke} or {erased: [strokes], fz: [freezes removed with them]}
+let history = [];
+function undo() {
+  const h = history.pop();
+  if (!h) return;
+  if (h.add) { strokes = strokes.filter(s => s !== h.add); pruneFreezes(); }
+  else {
+    freezes.push(...h.fz); strokes.push(...h.erased);
+    layout(); refreshLens();
+    if (!playing) seek(h.fz.length ? h.fz[0].g : globalT);
+  }
+  renderTimeline();
+}
+
 cv.addEventListener('pointerdown', e => {
   if (!clips.length || exporting) return;
   cv.setPointerCapture(e.pointerId);
+  if (tool === 'eraser') { erasing = { erased: [] }; eraseAt(canvasPoint(e)); return; }
   const freezeOn = $('freezeChk').checked;
   if (playing && freezeOn) pause();
   const c = clips[cur], p = canvasPoint(e);
@@ -662,23 +725,35 @@ $('fzLen').addEventListener('change', () => {
 });
 $('fzRemove').onclick = () => {
   const f = shownFreeze; if (!f) return;
+  const erased = strokes.filter(s => s.freezeId === f.id);
   freezes = freezes.filter(x => x !== f);
   strokes = strokes.filter(s => s.freezeId !== f.id);
+  history.push({ erased, fz: [f] });
   const g = f.g;
   layout(); renderTimeline(); refreshLens(); seek(Math.min(g, total));
-  toast('Freeze removed, along with its drawings.');
+  toast('Freeze removed, along with its drawings. Undo brings it back.');
 };
 $('freezeChk').onchange = () => { $('holdSel').disabled = $('freezeChk').checked; };
 cv.addEventListener('pointermove', e => {
+  if (erasing) return eraseAt(canvasPoint(e));
+  if (tool === 'eraser' && !exporting) {
+    hoverStroke = hitStroke(canvasPoint(e));
+    cv.style.cursor = hoverStroke ? 'pointer' : 'default';
+    return;
+  }
   if (!drawing) return;
   const p = canvasPoint(e);
   const dt = playing ? (performance.now() - drawing.t0) / 1000 : 0;
   if (drawing.tool === 'arrow') drawing.pts[1] = { ...p, dt: 0 };
   else drawing.pts.push({ ...p, dt });
 });
-const endStroke = () => { if (drawing) { delete drawing.t0; drawing = null; renderTimeline(); } };
+const endStroke = () => {
+  if (erasing) { commitErase(erasing.erased); erasing = null; }
+  if (drawing) { delete drawing.t0; history.push({ add: drawing }); drawing = null; renderTimeline(); }
+};
 cv.addEventListener('pointerup', endStroke);
 cv.addEventListener('pointercancel', endStroke);
+cv.addEventListener('pointerleave', () => { if (!erasing) hoverStroke = null; });
 
 // ---------- UI: clip bin ----------
 function renderBin() {
@@ -804,13 +879,17 @@ COLORS.forEach(col => {
   b.onclick = () => { color = col; document.querySelectorAll('.swatch').forEach(x => x.classList.toggle('on', x === b)); };
   $('swatches').appendChild(b);
 });
-document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => {
-  tool = b.dataset.tool; document.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('on', x === b));
-});
-$('undoBtn').onclick = () => { strokes.pop(); pruneFreezes(); renderTimeline(); };
+function setTool(t) {
+  tool = t; hoverStroke = null;
+  document.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('on', x.dataset.tool === t));
+  cv.style.cursor = t === 'eraser' ? 'default' : '';
+}
+document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+$('undoBtn').onclick = undo;
 $('clearBtn').onclick = () => {
-  strokes = strokes.filter(s => { const w = strokeWindow(s); return !(w && globalT >= w.gs - 0.03 && globalT <= w.end); });
-  pruneFreezes(); renderTimeline();
+  const gone = strokes.filter(s => visibleNow(s));
+  strokes = strokes.filter(s => !gone.includes(s));
+  commitErase(gone);
 };
 $('playBtn').onclick = () => playing ? pause() : play();
 $('addBtn').onclick = () => $('fileIn').click();
@@ -828,6 +907,7 @@ document.addEventListener('keydown', e => {
   if (e.target.matches('input, select')) return;
   if (e.code === 'Space') { e.preventDefault(); if (!exporting) playing ? pause() : play(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); $('undoBtn').click(); }
+  else if (e.key.toLowerCase() === 'e' && !e.ctrlKey && !e.metaKey) setTool(tool === 'eraser' ? 'pen' : 'eraser');
   else if (e.key === 'ArrowLeft' && !exporting) seek(globalT - 1);
   else if (e.key === 'ArrowRight' && !exporting) seek(globalT + 1);
 });
