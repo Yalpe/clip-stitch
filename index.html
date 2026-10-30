@@ -212,7 +212,7 @@ button.rec { color: var(--danger); }
         <button data-tool="pen" class="on">Pen</button>
         <button data-tool="hl">Highlighter</button>
         <button data-tool="arrow">Arrow</button>
-        <button data-tool="text" title="Click to add text; drag a text box to move it, click it to edit (T)">Text</button>
+        <button data-tool="text" title="Click to add text; drag a text box to move it, click it to edit. While editing, Size and color change the box (T)">Text</button>
         <button data-tool="eraser" title="Click or drag over a drawing to remove it (E)">Eraser</button>
       </div>
       <span class="sep"></span>
@@ -654,8 +654,10 @@ function placeText() {
   ta.style.width = `${Math.max(ta.scrollWidth + fs * 0.3, fs * 3)}px`;
   ta.style.height = `${ta.scrollHeight + 2}px`;
 }
+// While a box is open, the Size slider and color swatches change it, so they show its settings.
 function openText(s, isNew) {
-  textEdit = { s, isNew };
+  textEdit = { s, isNew, prev: { text: s.text, pts: s.pts, size: s.size, color: s.color } };
+  $('sizeIn').value = s.size; pickColor(s.color);
   const ta = $('textEdit');
   ta.value = s.text; ta.hidden = false;
   placeText();
@@ -670,16 +672,33 @@ function closeText(keep) {
   if (t.isNew) {
     if (keep && text.trim()) { t.s.text = text; strokes.push(t.s); history.push({ add: t.s }); }
     else pruneFreezes();   // a freeze made for this box has nothing on it
-  } else if (keep && !text.trim()) {
+  } else if (!keep) {
+    Object.assign(t.s, t.prev);
+  } else if (!text.trim()) {
+    Object.assign(t.s, t.prev);
     strokes = strokes.filter(x => x !== t.s); commitErase([t.s]);
-  } else if (keep && text !== t.s.text) {
-    history.push({ edit: t.s, prev: { text: t.s.text, pts: t.s.pts } });
+  } else if (text !== t.prev.text || t.s.size !== t.prev.size || t.s.color !== t.prev.color) {
+    history.push({ edit: t.s, prev: t.prev });
     t.s.text = text;
   }
   renderTimeline();
 }
 $('textEdit').addEventListener('input', placeText);
-$('textEdit').addEventListener('blur', () => closeText(true));
+// Reaching for the Size slider or a swatch keeps the box open; anywhere else finishes it.
+// Chrome blurs the box before a slider takes focus (relatedTarget is null), so note where the press landed.
+const stylesText = el => el instanceof Element && (!!el.closest('label[for="sizeIn"]') || el.classList.contains('swatch'));
+let pressOnStyle = false;
+document.addEventListener('pointerdown', e => { pressOnStyle = stylesText(e.target); }, true);
+$('textEdit').addEventListener('blur', e => { if (!pressOnStyle && !stylesText(e.relatedTarget)) closeText(true); });
+function restyleText(size, col) {
+  if (!textEdit) return;
+  if (size) textEdit.s.size = size;
+  if (col) textEdit.s.color = col;
+  placeText();
+}
+$('sizeIn').addEventListener('input', () => restyleText(+$('sizeIn').value));
+$('sizeIn').addEventListener('change', () => { pressOnStyle = false; if (textEdit) $('textEdit').focus(); });
+$('sizeIn').addEventListener('blur', e => { if (textEdit && !pressOnStyle && !stylesText(e.relatedTarget) && e.relatedTarget !== $('textEdit')) closeText(true); });
 $('textEdit').addEventListener('keydown', e => {
   if (e.key === 'Escape') { e.preventDefault(); closeText(false); }
   else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); closeText(true); }
@@ -1017,9 +1036,16 @@ $('timeline').addEventListener('pointerup', () => scrubbing = false);
 COLORS.forEach(col => {
   const b = document.createElement('button'); b.className = 'swatch' + (col === color ? ' on' : '');
   b.style.setProperty('--sw', col); b.setAttribute('aria-label', 'Color ' + col);
-  b.onclick = () => { color = col; document.querySelectorAll('.swatch').forEach(x => x.classList.toggle('on', x === b)); };
+  b.onclick = () => {
+    pickColor(col);
+    if (textEdit) { restyleText(0, col); $('textEdit').focus(); }
+  };
   $('swatches').appendChild(b);
 });
+function pickColor(col) {
+  color = col;
+  document.querySelectorAll('.swatch').forEach(x => x.classList.toggle('on', x.style.getPropertyValue('--sw') === col));
+}
 function setTool(t) {
   tool = t; hoverStroke = null;
   document.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('on', x.dataset.tool === t));
