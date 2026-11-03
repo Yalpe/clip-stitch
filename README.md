@@ -15,4 +15,6 @@ Join short video clips into one video, draw on top, and add titles — all in yo
 
 Nothing is uploaded: your videos are processed entirely in the browser. Works best in Chrome or Edge. Export records in real time, so keep the tab in front until it finishes.
 
-It's one self-contained `index.html` with no build step and no backend.
+It's one `index.html` plus its fonts in `fonts/`, with no build step and no backend. The page makes no network requests beyond its own files, and its Content Security Policy enforces that.
+
+The fonts (Bricolage Grotesque, Figtree, JetBrains Mono) are under the SIL Open Font License; see `fonts/OFL-*.txt`.
