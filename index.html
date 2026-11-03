@@ -216,7 +216,7 @@ button.rec { color: var(--danger); }
         <button data-tool="eraser" title="Click or drag over a drawing to remove it (E)">Eraser</button>
       </div>
       <div class="group" id="lineOpts" hidden>
-        <label for="lineDash">Style
+        <label for="lineDash" id="lineDashLbl">Style
           <select id="lineDash">
             <option value="solid">Solid</option>
             <option value="dashed">Dashed</option>
@@ -730,7 +730,7 @@ function drawStroke(s, elapsed, fade, W, H, tint) {
   ctx2d.strokeStyle = ctx2d.fillStyle = tint || s.color;
   if (tint) ctx2d.setLineDash([lw * 1.5, lw]);
   ctx2d.lineWidth = lw; ctx2d.lineCap = s.tool === 'hl' ? 'square' : 'round'; ctx2d.lineJoin = 'round';
-  const P = pts.map(p => [p.x * W, p.y * H]);
+  let P = pts.map(p => [p.x * W, p.y * H]);
   if (s.tool === 'line') {
     if (P.length >= 2) {
       const [a, b] = [P[0], P[P.length - 1]];
@@ -743,26 +743,53 @@ function drawStroke(s, elapsed, fade, W, H, tint) {
       // Dots are zero-length dashes drawn with round caps.
       if (!tint) ctx2d.setLineDash(s.dash === 'dashed' ? [lw * 2.5, lw * 2.2] : s.dash === 'dotted' ? [0.001, lw * 2] : []);
       ctx2d.beginPath(); ctx2d.moveTo(from[0], from[1]); ctx2d.lineTo(to[0], to[1]); ctx2d.stroke();
-      const tip = ([x, y], d) => {
-        ctx2d.beginPath(); ctx2d.moveTo(x, y);
-        ctx2d.lineTo(x - head * Math.cos(d - 0.45), y - head * Math.sin(d - 0.45));
-        ctx2d.lineTo(x - head * Math.cos(d + 0.45), y - head * Math.sin(d + 0.45));
-        ctx2d.closePath(); ctx2d.fill();
-      };
-      if (s.ends !== 'none') tip(b, ang);
-      if (s.ends === 'both') tip(a, ang + Math.PI);
+      if (s.ends !== 'none') arrowTip(b, ang, head);
+      if (s.ends === 'both') arrowTip(a, ang + Math.PI, head);
     }
   } else if (P.length === 1) {
     ctx2d.beginPath(); ctx2d.arc(P[0][0], P[0][1], lw / 2, 0, Math.PI * 2); ctx2d.fill();
   } else {
+    let tips = [];
+    if (s.tool === 'pen' && s.ends && s.ends !== 'none') {
+      // Each head points along the last stretch of the stroke (one head-length back), which hides hand jitter;
+      // the path is trimmed under it so the round cap doesn't poke through the tip.
+      const head = Math.max(lw * 3.5, 14 * H / 720);
+      if (pathLength(P) > head * 1.5) {
+        const end = P[P.length - 1], back = trimEnd(P, head).pop();
+        tips.push([end, Math.atan2(end[1] - back[1], end[0] - back[0]), head]);
+        P = trimEnd(P, head * 0.6);
+        if (s.ends === 'both') {
+          const R = P.slice().reverse(), start = R[R.length - 1], fwd = trimEnd(R, head).pop();
+          tips.push([start, Math.atan2(start[1] - fwd[1], start[0] - fwd[0]), head]);
+          P = trimEnd(R, head * 0.6).reverse();
+        }
+      }
+    }
     ctx2d.beginPath(); ctx2d.moveTo(P[0][0], P[0][1]);
     for (let i = 1; i < P.length - 1; i++) {
       const mx = (P[i][0] + P[i + 1][0]) / 2, my = (P[i][1] + P[i + 1][1]) / 2;
       ctx2d.quadraticCurveTo(P[i][0], P[i][1], mx, my);
     }
     const L = P[P.length - 1]; ctx2d.lineTo(L[0], L[1]); ctx2d.stroke();
+    tips.forEach(([p, d, head]) => arrowTip(p, d, head));
   }
   ctx2d.restore();
+}
+function arrowTip([x, y], d, head) {
+  ctx2d.beginPath(); ctx2d.moveTo(x, y);
+  ctx2d.lineTo(x - head * Math.cos(d - 0.45), y - head * Math.sin(d - 0.45));
+  ctx2d.lineTo(x - head * Math.cos(d + 0.45), y - head * Math.sin(d + 0.45));
+  ctx2d.closePath(); ctx2d.fill();
+}
+const pathLength = P => P.reduce((n, p, i) => i ? n + Math.hypot(p[0] - P[i - 1][0], p[1] - P[i - 1][1]) : 0, 0);
+// The polyline with its last `d` pixels cut off (the cut lands mid-segment where needed).
+function trimEnd(P, d) {
+  for (let i = P.length - 1; i > 0; i--) {
+    const [ax, ay] = P[i - 1], [bx, by] = P[i], seg = Math.hypot(bx - ax, by - ay);
+    if (seg >= d) { const t = (seg - d) / seg; return P.slice(0, i).concat([[ax + (bx - ax) * t, ay + (by - ay) * t]]); }
+    d -= seg;
+  }
+  return [P[0]];
 }
 // Shift while drawing a line: keep its length, round its angle to 15° steps (in pixels, not normalized units).
 function snapAngle(a, p) {
@@ -863,9 +890,10 @@ cv.addEventListener('pointerdown', e => {
   drawing = { clipId: c.id, tool, color, size: +$('sizeIn').value,
               hold: $('holdSel').value, pts: [{ ...p, dt: 0 }], t0: performance.now(), ...anchorHere(c) };
   if (tool === 'line') {
-    drawing.dash = $('lineDash').value; drawing.ends = $('lineEnds').value;
+    drawing.dash = $('lineDash').value;
     drawing.pts.push({ ...p, dt: 0 });
   }
+  if (tool === 'line' || tool === 'pen') drawing.ends = $('lineEnds').value;
   strokes.push(drawing);
 });
 const freezeLen = () => { const v = parseFloat($('freezeDur').value); return isNaN(v) ? 4 : Math.min(60, Math.max(0.5, v)); };
@@ -1085,9 +1113,15 @@ function setTool(t) {
   tool = t; hoverStroke = null;
   document.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('on', x.dataset.tool === t));
   cv.style.cursor = t === 'eraser' ? 'default' : t === 'text' ? 'text' : '';
-  $('lineOpts').hidden = t !== 'line';
+  // Ends apply to the pen and the line, each remembering its own choice (the pen starts plain, the line with an arrow).
+  $('lineOpts').hidden = !(t in endsFor);
+  $('lineDashLbl').hidden = t !== 'line';
+  if (t in endsFor) $('lineEnds').value = endsFor[t];
 }
+const endsFor = { pen: 'none', line: 'end' };
+$('lineEnds').onchange = () => { endsFor[tool] = $('lineEnds').value; };
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+setTool(tool);
 $('undoBtn').onclick = undo;
 $('muteBtn').onclick = () => setMuted(!muted);
 $('clearBtn').onclick = () => {
