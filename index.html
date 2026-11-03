@@ -210,10 +210,19 @@ button.rec { color: var(--danger); }
     <div class="tools" id="tools">
       <div class="group" role="group" aria-label="Tool">
         <button data-tool="pen" class="on">Pen</button>
-        <button data-tool="hl">Highlighter</button>
+        <button data-tool="spot" title="Drag an ellipse to keep it bright and dim everything around it; hold Shift for a circle (S)">Spotlight</button>
         <button data-tool="line" title="Straight line; hold Shift to snap the angle (L)">Line</button>
         <button data-tool="text" title="Click to add text; drag a text box to move it, click it to edit. While editing, Size and color change the box (T)">Text</button>
         <button data-tool="eraser" title="Click or drag over a drawing to remove it (E)">Eraser</button>
+      </div>
+      <div class="group" id="spotOpts" hidden>
+        <label for="spotDim">Dim
+          <select id="spotDim">
+            <option value="0.45">Light</option>
+            <option value="0.65" selected>Medium</option>
+            <option value="0.82">Strong</option>
+          </select>
+        </label>
       </div>
       <div class="group" id="lineOpts" hidden>
         <label for="lineDash" id="lineDashLbl">Style
@@ -471,6 +480,7 @@ function play() {
   if (!clips.length || total <= 0) return;
   ensureAudio();
   if (globalT >= total - 0.05) seek(0, false);
+  playFrom = globalT;
   playing = true; startCur();
   syncButtons();
 }
@@ -542,6 +552,7 @@ function tick() {
 function compose() {
   const W = cv.width, H = cv.height;
   ctx2d.drawImage(frame, 0, 0);
+  drawSpotlights(W, H);   // under titles and drawings, so those stay bright
   const c = clips[cur];
   if (c && c.title.trim()) {
     // While paused, show the title fully in rather than mid-fade (at 0:00 it would still be invisible).
@@ -622,7 +633,62 @@ function drawCaption(c, t, W, H) {
 }
 document.fonts?.load(`700 48px ${TITLE_FONT}`).catch(() => {});
 
-const strokeWidth = (s, H) => s.size * H / 720 * (s.tool === 'hl' ? 3 : 1);
+const strokeWidth = (s, H) => s.size * H / 720;
+// ---------- spotlight ----------
+// A spotlight is an ellipse fitted to the box its two points span; everything outside it dims.
+const spotMask = document.createElement('canvas'), smx = spotMask.getContext('2d');
+let playFrom = 0;   // where the current playback started
+function spotGeom(s, W, H) {
+  const [a, b] = s.pts;
+  return { cx: (a.x + b.x) / 2 * W, cy: (a.y + b.y) / 2 * H, rx: Math.abs(b.x - a.x) / 2 * W, ry: Math.abs(b.y - a.y) / 2 * H };
+}
+// All spotlights on screen share one dim layer (as dark as the darkest of them) with a soft-edged hole for each.
+function drawSpotlights(W, H) {
+  const on = [];
+  for (const s of strokes) {
+    if (s.tool !== 'spot') continue;
+    if (s === drawing) { on.push([s, 1]); continue; }
+    const v = visibleNow(s);
+    if (!v) continue;
+    // Fade in only when playback runs into it; paused, or resuming right where it starts, it's simply there.
+    const reached = playing && globalT - v.elapsed > playFrom + 0.05;
+    on.push([s, Math.min(v.fade, reached ? Math.min(1, v.elapsed / 0.3) : 1)]);
+  }
+  if (!on.length) return;
+  if (spotMask.width !== W || spotMask.height !== H) { spotMask.width = W; spotMask.height = H; }
+  smx.globalCompositeOperation = 'source-over';
+  smx.clearRect(0, 0, W, H);
+  smx.fillStyle = `rgba(0, 0, 0, ${Math.max(...on.map(([s, k]) => s.dim * k))})`;
+  smx.fillRect(0, 0, W, H);
+  smx.globalCompositeOperation = 'destination-out';
+  for (const [s] of on) {
+    const g = spotGeom(s, W, H);
+    if (g.rx < 1 || g.ry < 1) continue;
+    // A radial gradient in a unit circle, scaled to the ellipse: solid inside, feathered over ~24px at 720p.
+    const soft = Math.min(0.4, 24 * H / 720 / Math.min(g.rx, g.ry));
+    smx.save(); smx.translate(g.cx, g.cy); smx.scale(g.rx, g.ry);
+    const grad = smx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    grad.addColorStop(0, '#000'); grad.addColorStop(1 - soft, '#000'); grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    smx.fillStyle = grad;
+    smx.beginPath(); smx.arc(0, 0, 1, 0, Math.PI * 2); smx.fill();
+    smx.restore();
+  }
+  ctx2d.drawImage(spotMask, 0, 0);
+}
+// The dashed rim: a guide while dragging one out, or the eraser's target outline.
+function drawSpotRim(s, W, H, tint) {
+  const g = spotGeom(s, W, H), u = H / 720;
+  ctx2d.save();
+  ctx2d.strokeStyle = tint || 'rgba(255, 255, 255, 0.85)';
+  ctx2d.lineWidth = (tint ? 3 : 1.5) * u; ctx2d.setLineDash([8 * u, 6 * u]);
+  ctx2d.beginPath(); ctx2d.ellipse(g.cx, g.cy, Math.max(g.rx, 0.5), Math.max(g.ry, 0.5), 0, 0, Math.PI * 2); ctx2d.stroke();
+  ctx2d.restore();
+}
+// Shift while dragging a spotlight: make it a circle (equal in pixels).
+function squareUp(a, p) {
+  const W = cv.width, H = cv.height, dx = (p.x - a.x) * W, dy = (p.y - a.y) * H, m = Math.max(Math.abs(dx), Math.abs(dy));
+  return { x: a.x + Math.sign(dx || 1) * m / W, y: a.y + Math.sign(dy || 1) * m / H };
+}
 // ---------- text boxes ----------
 const TEXT_FONT = fs => `700 ${fs}px ${TITLE_FONT}`;
 const textSize = (s, H) => s.size * 6 * H / 720;
@@ -722,14 +788,15 @@ $('textEdit').addEventListener('keydown', e => {
 
 function drawStroke(s, elapsed, fade, W, H, tint) {
   if (s.tool === 'text') return drawText(s, fade, W, H, tint);
+  if (s.tool === 'spot') { if (tint || s === drawing) drawSpotRim(s, W, H, tint); return; }   // the dimming is drawSpotlights'
   const pts = s.pts.filter(p => p.dt <= elapsed + 0.001);
   if (!pts.length) return;
   const lw = strokeWidth(s, H) + (tint ? 4 * H / 720 : 0);
   ctx2d.save();
-  ctx2d.globalAlpha = tint ? 0.6 : (s.tool === 'hl' ? 0.38 : 1) * fade;
+  ctx2d.globalAlpha = tint ? 0.6 : fade;
   ctx2d.strokeStyle = ctx2d.fillStyle = tint || s.color;
   if (tint) ctx2d.setLineDash([lw * 1.5, lw]);
-  ctx2d.lineWidth = lw; ctx2d.lineCap = s.tool === 'hl' ? 'square' : 'round'; ctx2d.lineJoin = 'round';
+  ctx2d.lineWidth = lw; ctx2d.lineCap = 'round'; ctx2d.lineJoin = 'round';
   let P = pts.map(p => [p.x * W, p.y * H]);
   if (s.tool === 'line') {
     if (P.length >= 2) {
@@ -808,7 +875,7 @@ function hitStroke(p) {
   const x = p.x * W, y = p.y * H, slack = 8 * W / r.width;   // 8 screen pixels of leeway
   for (let i = strokes.length - 1; i >= 0; i--) {
     const s = strokes[i], v = visibleNow(s);
-    if (!v) continue;
+    if (!v || s.tool === 'spot') continue;
     if (s.tool === 'text') {
       const b = textBox(s, W, H);
       if (x >= b.x - slack && x <= b.x + b.w + slack && y >= b.y - slack && y <= b.y + b.h + slack) return s;
@@ -819,6 +886,13 @@ function hitStroke(p) {
     const reach = strokeWidth(s, H) / 2 + slack;
     if (P.length === 1 && Math.hypot(x - P[0][0], y - P[0][1]) <= reach) return s;
     for (let j = 1; j < P.length; j++) if (distToSeg(x, y, P[j - 1], P[j]) <= reach) return s;
+  }
+  // Spotlights sit under everything, so they're hit last: anywhere inside the ellipse counts.
+  for (let i = strokes.length - 1; i >= 0; i--) {
+    const s = strokes[i];
+    if (s.tool !== 'spot' || !visibleNow(s)) continue;
+    const g = spotGeom(s, W, H), rx = g.rx + slack, ry = g.ry + slack;
+    if (((x - g.cx) / rx) ** 2 + ((y - g.cy) / ry) ** 2 <= 1) return s;
   }
   return null;
 }
@@ -894,6 +968,7 @@ cv.addEventListener('pointerdown', e => {
     drawing.pts.push({ ...p, dt: 0 });
   }
   if (tool === 'line' || tool === 'pen') drawing.ends = $('lineEnds').value;
+  if (tool === 'spot') { drawing.dim = +$('spotDim').value; drawing.pts.push({ ...p, dt: 0 }); }
   strokes.push(drawing);
 });
 const freezeLen = () => { const v = parseFloat($('freezeDur').value); return isNaN(v) ? 4 : Math.min(60, Math.max(0.5, v)); };
@@ -956,6 +1031,7 @@ cv.addEventListener('pointermove', e => {
   const p = canvasPoint(e);
   const dt = playing ? (performance.now() - drawing.t0) / 1000 : 0;
   if (drawing.tool === 'line') drawing.pts[1] = { ...(e.shiftKey ? snapAngle(drawing.pts[0], p) : p), dt: 0 };
+  else if (drawing.tool === 'spot') drawing.pts[1] = { ...(e.shiftKey ? squareUp(drawing.pts[0], p) : p), dt: 0 };
   else drawing.pts.push({ ...p, dt });
 });
 const endStroke = () => {
@@ -970,7 +1046,14 @@ const endStroke = () => {
                  text: '', pts: [{ ...d.from, dt: 0 }], ...anchorHere(c) }, true);
     }
   }
-  if (drawing) { delete drawing.t0; history.push({ add: drawing }); drawing = null; renderTimeline(); }
+  if (drawing) {
+    const d = drawing; drawing = null; delete d.t0;
+    const r = cv.getBoundingClientRect();
+    if (d.tool === 'spot' && Math.min(Math.abs(d.pts[1].x - d.pts[0].x) * r.width, Math.abs(d.pts[1].y - d.pts[0].y) * r.height) < 8) {
+      strokes = strokes.filter(x => x !== d); pruneFreezes();   // a click, not a drag: nothing to spotlight
+    } else history.push({ add: d });
+    renderTimeline();
+  }
 };
 cv.addEventListener('pointerup', endStroke);
 cv.addEventListener('pointercancel', endStroke);
@@ -1116,6 +1199,7 @@ function setTool(t) {
   // Ends apply to the pen and the line, each remembering its own choice (the pen starts plain, the line with an arrow).
   $('lineOpts').hidden = !(t in endsFor);
   $('lineDashLbl').hidden = t !== 'line';
+  $('spotOpts').hidden = t !== 'spot';
   if (t in endsFor) $('lineEnds').value = endsFor[t];
 }
 const endsFor = { pen: 'none', line: 'end' };
@@ -1149,6 +1233,7 @@ document.addEventListener('keydown', e => {
   else if (e.key.toLowerCase() === 't' && !e.ctrlKey && !e.metaKey) setTool(tool === 'text' ? 'pen' : 'text');
   else if (e.key.toLowerCase() === 'm' && !e.ctrlKey && !e.metaKey) setMuted(!muted);
   else if (e.key.toLowerCase() === 'l' && !e.ctrlKey && !e.metaKey) setTool(tool === 'line' ? 'pen' : 'line');
+  else if (e.key.toLowerCase() === 's' && !e.ctrlKey && !e.metaKey) setTool(tool === 'spot' ? 'pen' : 'spot');
   else if (e.key === 'ArrowLeft' && !exporting) seek(globalT - 1);
   else if (e.key === 'ArrowRight' && !exporting) seek(globalT + 1);
 });
