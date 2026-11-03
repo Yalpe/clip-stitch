@@ -173,14 +173,14 @@ button.rec { color: var(--danger); }
   <aside>
     <h2>Clips, in play order</h2>
     <div id="bin" class="bin"></div>
-    <p class="hint" id="binHint">Add or drop video files. They play top to bottom. Trim each one with the start and end boxes (seconds into that file).</p>
+    <p class="hint" id="binHint">Add or drop video files. They play top to bottom. Trim each one with the start and end boxes (seconds into that file). To cut a long clip into parts, move the playhead and press Split.</p>
     <p class="hint">Type a title on any clip to show it as a title card before the clip, or as a caption over its first seconds.</p>
     <h2>Drawing</h2>
     <p class="hint">Pause and draw: the drawing appears at that moment and stays for the time you pick under "Show for".
       Draw while it plays: your strokes are replayed exactly as you drew them.</p>
     <p class="hint">"Freeze frame" is on by default (2 s): the video stops on that frame while you draw. Untick it to draw over moving video instead. The exported video holds the still image, with your drawings, for the seconds you set, then carries on. The timeline shows freezes as striped blocks.</p>
     <p class="hint">To remove one drawing, pick the Eraser and click it, or drag across several. The drawing under the eraser is outlined in red first. Undo brings back anything you erased.</p>
-    <p class="hint"><kbd>Space</kbd> play / pause &nbsp; <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp; <kbd>E</kbd> eraser &nbsp; <kbd>←</kbd><kbd>→</kbd> step 1 s</p>
+    <p class="hint"><kbd>Space</kbd> play / pause &nbsp; <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp; <kbd>E</kbd> eraser &nbsp; <kbd>C</kbd> split &nbsp; <kbd>←</kbd><kbd>→</kbd> step 1 s</p>
   </aside>
 
   <main>
@@ -270,6 +270,7 @@ button.rec { color: var(--danger); }
 
     <div class="transport">
       <button id="playBtn" disabled>▶ Play</button>
+      <button id="splitBtn" disabled title="Split the clip at the playhead into two parts (C)">✂ Split</button>
       <span class="time mono"><b id="tNow">0:00.0</b> / <span id="tTotal">0:00.0</span></span>
       <button id="muteBtn" aria-pressed="false" title="Silence playback while editing; exports keep their sound (M)">🔊 Sound</button>
     </div>
@@ -381,11 +382,8 @@ async function addFiles(files) {
   for (const file of files) {
     if (!file.type.startsWith('video/') && !/\.(mp4|mov|webm|mkv|m4v|avi)$/i.test(file.name)) continue;
     const url = URL.createObjectURL(file);
-    const v = document.createElement('video');
-    v.preload = 'auto'; v.playsInline = true; v.src = url;
-    $('vids').appendChild(v);
-    const ok = await Promise.race([once(v, 'loadeddata').then(() => true), once(v, 'error').then(() => false)]);
-    if (!ok || !v.videoWidth) {
+    const v = makeVideo(url);
+    if (!await loaded(v) || !v.videoWidth) {
       toast(`Can't play “${file.name}” in this browser. iPhone HEVC .mov files often need converting to MP4 first.`, true);
       v.remove(); URL.revokeObjectURL(url); continue;
     }
@@ -393,14 +391,53 @@ async function addFiles(files) {
     if (!isFinite(dur)) dur = await probeDuration(v);
     if (!isFinite(dur) || dur <= 0) { toast(`Couldn't read the length of “${file.name}”.`, true); v.remove(); URL.revokeObjectURL(url); continue; }
     const c = { id: nextId++, name: file.name, url, video: v, dur, inP: 0, outP: dur, title: '', tStyle: 'card', tDur: 2 };
-    v.addEventListener('seeked', () => { if (clips[cur] === c) grabFrame(); });
     clips.push(c);
-    if (audioCtx) connectAudio(c);
+    hookUp(c);
     if (clips.length === 1) { applySize(); }
   }
   layout(); renderBin(); renderTimeline();
   if (clips.length) { $('stage').classList.remove('empty'); seek(globalT); }
   syncButtons();
+}
+function makeVideo(url) {
+  const v = document.createElement('video');
+  v.preload = 'auto'; v.playsInline = true; v.src = url;
+  $('vids').appendChild(v);
+  return v;
+}
+const loaded = v => Promise.race([once(v, 'loadeddata').then(() => true), once(v, 'error').then(() => false)]);
+function hookUp(c) {
+  c.video.addEventListener('seeked', () => { if (clips[cur] === c) grabFrame(); });
+  if (audioCtx) connectAudio(c);
+}
+// Parts split from one file show their range, so they can be told apart.
+const label = c => clips.some(o => o !== c && o.url === c.url) ? `${c.name} · ${fmt(c.inP)}–${fmt(c.outP)}` : c.name;
+// Splitting gives the new part its own <video> on the same file, so playback hands over at the cut without a seek stall.
+async function splitAtPlayhead() {
+  if (!clips.length || exporting) return;
+  pause();
+  const loc = locate(globalT), c = clips[loc.i], cut = loc.local;
+  if (loc.inCard) return toast('Move the playhead past the title card to split there.');
+  if (cut < c.inP + 0.1 || cut > c.outP - 0.1) return toast('Move the playhead further into the clip to split it.');
+  const v = makeVideo(c.url);
+  if (!await loaded(v) || !clips.includes(c) || cut <= c.inP || cut >= c.outP) { v.remove(); return; }
+  v.currentTime = cut;
+  const n = { id: nextId++, name: c.name, url: c.url, video: v, dur: c.dur, inP: cut, outP: c.outP, title: '', tStyle: c.tStyle, tDur: c.tDur };
+  c.outP = cut;
+  clips.splice(clips.indexOf(c) + 1, 0, n);
+  hookUp(n);
+  // Freezes and drawings from the cut onward move to the new part, including erased ones that Undo could bring back.
+  const fzs = new Set(freezes), strs = new Set(strokes);
+  for (const h of history) {
+    if (h.add) strs.add(h.add);
+    if (h.edit) strs.add(h.edit);
+    h.erased?.forEach(x => strs.add(x)); h.fz?.forEach(f => fzs.add(f));
+  }
+  const movedFz = new Set();
+  for (const f of fzs) if (f.clipId === c.id && f.src >= cut) { f.clipId = n.id; movedFz.add(f.id); }
+  for (const x of strs) if (x.clipId === c.id && (x.freezeId ? movedFz.has(x.freezeId) : x.src >= cut)) x.clipId = n.id;
+  layout(); renderBin(); renderTimeline(); syncButtons();
+  seek(n.vStart, false);
 }
 // Browser-recorded WebM files often report Infinity until you seek past the end.
 async function probeDuration(v) {
@@ -1070,7 +1107,7 @@ function renderBin() {
     el.innerHTML = `
       <div class="top">
         <span class="num">${String(i + 1).padStart(2, '0')}</span>
-        <span class="name" title="${esc(c.name)}">${esc(c.name)}</span>
+        <span class="name" title="${esc(label(c))}">${esc(label(c))}</span>
         <span class="len">${fmt(c.len)}</span>
         <button data-act="up" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button data-act="down" aria-label="Move down" ${i === clips.length - 1 ? 'disabled' : ''}>↓</button>
@@ -1111,7 +1148,8 @@ $('bin').addEventListener('click', e => {
     [clips[i], clips[j]] = [clips[j], clips[i]];
     cur = clips.indexOf(active);
   } else if (act === 'del') {
-    pause(); c.video.pause(); c.video.remove(); URL.revokeObjectURL(c.url);
+    pause(); c.video.pause(); c.video.remove();
+    if (!clips.some(o => o !== c && o.url === c.url)) URL.revokeObjectURL(c.url);
     clips.splice(i, 1); strokes = strokes.filter(s => s.clipId !== c.id); freezes = freezes.filter(f => f.clipId !== c.id);
     cur = 0; globalT = 0;
     if (!clips.length) { $('stage').classList.add('empty'); fctx.clearRect(0, 0, frame.width, frame.height); }
@@ -1156,7 +1194,7 @@ function renderTimeline() {
     d.style.setProperty('--c', c.color); d.style.flex = `${c.len} 0 0`;
     d.innerHTML = (c.card ? `<i style="width:${(c.card / c.len) * 100}%"></i>` : '')
       + c.fz.map(f => `<b style="left:${((f.g - c.gStart) / c.len) * 100}%;width:${(f.dur / c.len) * 100}%"></b>`).join('')
-      + `<span>${esc(c.title.trim() || c.name)}</span>`;
+      + `<span>${esc(c.title.trim() || label(c))}</span>`;
     segs.appendChild(d);
   });
   const marks = $('marks'); marks.innerHTML = '';
@@ -1215,12 +1253,14 @@ $('clearBtn').onclick = () => {
   commitErase(gone);
 };
 $('playBtn').onclick = () => playing ? pause() : play();
+$('splitBtn').onclick = splitAtPlayhead;
 $('addBtn').onclick = () => $('fileIn').click();
 $('fileIn').onchange = e => { addFiles([...e.target.files]); e.target.value = ''; };
 $('resSel').onchange = applySize;
 function syncButtons() {
   $('playBtn').textContent = playing ? '❚❚ Pause' : '▶ Play';
   $('playBtn').disabled = !clips.length || exporting;
+  $('splitBtn').disabled = !clips.length || exporting;
   $('exportBtn').disabled = !clips.length || exporting || !!screenRec;
   $('addBtn').disabled = exporting;
   $('recBtn').disabled = exporting || !!screenRec;
@@ -1230,6 +1270,7 @@ document.addEventListener('keydown', e => {
   if (e.target.matches('input, select, textarea')) return;
   if (e.code === 'Space') { e.preventDefault(); if (!exporting) playing ? pause() : play(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); $('undoBtn').click(); }
+  else if (e.key.toLowerCase() === 'c' && !e.ctrlKey && !e.metaKey) splitAtPlayhead();
   else if (e.key.toLowerCase() === 'e' && !e.ctrlKey && !e.metaKey) setTool(tool === 'eraser' ? 'pen' : 'eraser');
   else if (e.key.toLowerCase() === 't' && !e.ctrlKey && !e.metaKey) setTool(tool === 'text' ? 'pen' : 'text');
   else if (e.key.toLowerCase() === 'm' && !e.ctrlKey && !e.metaKey) setMuted(!muted);
