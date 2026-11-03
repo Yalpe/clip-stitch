@@ -8,7 +8,7 @@ Join short video clips into one video, draw on top, and add titles — all in yo
 - Record your screen with microphone narration and computer sound; the recording lands in the clip list (Chrome or Edge on a computer).
 - Draw with a pen or straight lines (solid, dashed or dotted), or drag a spotlight to dim everything around an area. Pen strokes and lines can end in arrowheads at one or both ends. Remove any single drawing with the eraser (Undo brings it back). Draw while paused to place a drawing at that moment, or while playing to record the strokes as you make them.
 - Add text boxes: click to type, drag to move, click again to edit its text, size or color.
-- Freeze the frame while you draw: the video holds still with your drawings for as long as you set, then carries on.
+- Freeze the frame while you draw (on by default, 2 seconds): the video holds still with your drawings for as long as you set, then carries on.
 - Give any clip a title: a full-screen card before it, or a caption over its first seconds.
 - Mute playback while you edit; exports still keep their sound.
 - Export a single MP4 (or WebM) with sound.

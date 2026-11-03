@@ -178,7 +178,7 @@ button.rec { color: var(--danger); }
     <h2>Drawing</h2>
     <p class="hint">Pause and draw: the drawing appears at that moment and stays for the time you pick under "Show for".
       Draw while it plays: your strokes are replayed exactly as you drew them.</p>
-    <p class="hint">Tick "Freeze frame" to stop the video on that frame while you draw. The exported video holds the still image, with your drawings, for the seconds you set, then carries on. The timeline shows freezes as striped blocks.</p>
+    <p class="hint">"Freeze frame" is on by default (2 s): the video stops on that frame while you draw. Untick it to draw over moving video instead. The exported video holds the still image, with your drawings, for the seconds you set, then carries on. The timeline shows freezes as striped blocks.</p>
     <p class="hint">To remove one drawing, pick the Eraser and click it, or drag across several. The drawing under the eraser is outlined in red first. Undo brings back anything you erased.</p>
     <p class="hint"><kbd>Space</kbd> play / pause &nbsp; <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp; <kbd>E</kbd> eraser &nbsp; <kbd>←</kbd><kbd>→</kbd> step 1 s</p>
   </aside>
@@ -254,8 +254,8 @@ button.rec { color: var(--danger); }
           <option value="all">rest of the video</option>
         </select>
       </label>
-      <label for="freezeChk"><input id="freezeChk" type="checkbox"> Freeze frame</label>
-      <label for="freezeDur">for <input id="freezeDur" type="number" min="0.5" max="60" step="0.5" value="4"> s</label>
+      <label for="freezeChk"><input id="freezeChk" type="checkbox" checked> Freeze frame</label>
+      <label for="freezeDur">for <input id="freezeDur" type="number" min="0.5" max="60" step="0.5" value="2"> s</label>
       <span class="sep"></span>
       <button id="undoBtn">Undo</button>
       <button id="clearBtn">Clear drawings on screen</button>
@@ -971,7 +971,7 @@ cv.addEventListener('pointerdown', e => {
   if (tool === 'spot') { drawing.dim = +$('spotDim').value; drawing.pts.push({ ...p, dt: 0 }); }
   strokes.push(drawing);
 });
-const freezeLen = () => { const v = parseFloat($('freezeDur').value); return isNaN(v) ? 4 : Math.min(60, Math.max(0.5, v)); };
+const freezeLen = () => { const v = parseFloat($('freezeDur').value); return isNaN(v) ? 2 : Math.min(60, Math.max(0.5, v)); };
 function refreshLens() {
   document.querySelectorAll('.clip').forEach((row, i) => row.querySelector('.len').textContent = fmt(clips[i].len));
 }
@@ -1009,6 +1009,7 @@ $('fzRemove').onclick = () => {
   toast('Freeze removed, along with its drawings. Undo brings it back.');
 };
 $('freezeChk').onchange = () => { $('holdSel').disabled = $('freezeChk').checked; };
+$('freezeChk').onchange();   // on by default, so "Show for" starts disabled
 cv.addEventListener('pointermove', e => {
   if (erasing) return eraseAt(canvasPoint(e));
   if (textDrag) {
