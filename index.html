@@ -211,9 +211,25 @@ button.rec { color: var(--danger); }
       <div class="group" role="group" aria-label="Tool">
         <button data-tool="pen" class="on">Pen</button>
         <button data-tool="hl">Highlighter</button>
-        <button data-tool="arrow">Arrow</button>
+        <button data-tool="line" title="Straight line; hold Shift to snap the angle (L)">Line</button>
         <button data-tool="text" title="Click to add text; drag a text box to move it, click it to edit. While editing, Size and color change the box (T)">Text</button>
         <button data-tool="eraser" title="Click or drag over a drawing to remove it (E)">Eraser</button>
+      </div>
+      <div class="group" id="lineOpts" hidden>
+        <label for="lineDash">Style
+          <select id="lineDash">
+            <option value="solid">Solid</option>
+            <option value="dashed">Dashed</option>
+            <option value="dotted">Dotted</option>
+          </select>
+        </label>
+        <label for="lineEnds">Ends
+          <select id="lineEnds">
+            <option value="none">None</option>
+            <option value="end" selected>Arrow</option>
+            <option value="both">Arrow both ends</option>
+          </select>
+        </label>
       </div>
       <span class="sep"></span>
       <div class="group" id="swatches" role="group" aria-label="Color"></div>
@@ -276,7 +292,7 @@ const COLORS = ['#ffd23f', '#ff4d4d', '#3ddc84', '#38b6ff', '#ffffff', '#111111'
 const SEG_COLORS = ['#7cc4ff', '#ffb86b', '#9be37f', '#e59bff', '#ff8f8f', '#7fe3d6'];
 
 let clips = [];          // {id, name, url, video, dur, inP, outP, title, tStyle, tDur, gStart, card, vStart, fz, len, color, node}
-let strokes = [];        // {clipId, tool, color, size, src | freezeId+fo, hold, pts:[{x,y,dt}]}
+let strokes = [];        // {clipId, tool, color, size, src | freezeId+fo, hold, pts:[{x,y,dt}]}; lines add dash+ends, text adds text
 let freezes = [];        // {id, clipId, src, dur, g}: hold the frame at source time `src` for `dur` seconds
 let cur = 0, globalT = 0, total = 0, playing = false, exporting = false;
 let hold = null;         // {g0, t0, end} while a title card or frozen frame plays (clock-driven, video paused)
@@ -715,16 +731,26 @@ function drawStroke(s, elapsed, fade, W, H, tint) {
   if (tint) ctx2d.setLineDash([lw * 1.5, lw]);
   ctx2d.lineWidth = lw; ctx2d.lineCap = s.tool === 'hl' ? 'square' : 'round'; ctx2d.lineJoin = 'round';
   const P = pts.map(p => [p.x * W, p.y * H]);
-  if (s.tool === 'arrow') {
+  if (s.tool === 'line') {
     if (P.length >= 2) {
       const [a, b] = [P[0], P[P.length - 1]];
       const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), head = Math.max(lw * 3.5, 14 * H / 720);
-      ctx2d.beginPath(); ctx2d.moveTo(a[0], a[1]);
-      ctx2d.lineTo(b[0] - Math.cos(ang) * head * 0.6, b[1] - Math.sin(ang) * head * 0.6); ctx2d.stroke();
-      ctx2d.beginPath(); ctx2d.moveTo(b[0], b[1]);
-      ctx2d.lineTo(b[0] - head * Math.cos(ang - 0.45), b[1] - head * Math.sin(ang - 0.45));
-      ctx2d.lineTo(b[0] - head * Math.cos(ang + 0.45), b[1] - head * Math.sin(ang + 0.45));
-      ctx2d.closePath(); ctx2d.fill();
+      const cx = Math.cos(ang), cy = Math.sin(ang);
+      // The shaft stops short of each arrowhead so its round cap doesn't poke through the tip.
+      const cut = Math.min(head * 0.6, Math.hypot(b[0] - a[0], b[1] - a[1]) / 2);
+      const from = s.ends === 'both' ? [a[0] + cx * cut, a[1] + cy * cut] : a;
+      const to = s.ends !== 'none' ? [b[0] - cx * cut, b[1] - cy * cut] : b;
+      // Dots are zero-length dashes drawn with round caps.
+      if (!tint) ctx2d.setLineDash(s.dash === 'dashed' ? [lw * 2.5, lw * 2.2] : s.dash === 'dotted' ? [0.001, lw * 2] : []);
+      ctx2d.beginPath(); ctx2d.moveTo(from[0], from[1]); ctx2d.lineTo(to[0], to[1]); ctx2d.stroke();
+      const tip = ([x, y], d) => {
+        ctx2d.beginPath(); ctx2d.moveTo(x, y);
+        ctx2d.lineTo(x - head * Math.cos(d - 0.45), y - head * Math.sin(d - 0.45));
+        ctx2d.lineTo(x - head * Math.cos(d + 0.45), y - head * Math.sin(d + 0.45));
+        ctx2d.closePath(); ctx2d.fill();
+      };
+      if (s.ends !== 'none') tip(b, ang);
+      if (s.ends === 'both') tip(a, ang + Math.PI);
     }
   } else if (P.length === 1) {
     ctx2d.beginPath(); ctx2d.arc(P[0][0], P[0][1], lw / 2, 0, Math.PI * 2); ctx2d.fill();
@@ -737,6 +763,12 @@ function drawStroke(s, elapsed, fade, W, H, tint) {
     const L = P[P.length - 1]; ctx2d.lineTo(L[0], L[1]); ctx2d.stroke();
   }
   ctx2d.restore();
+}
+// Shift while drawing a line: keep its length, round its angle to 15° steps (in pixels, not normalized units).
+function snapAngle(a, p) {
+  const W = cv.width, H = cv.height, dx = (p.x - a.x) * W, dy = (p.y - a.y) * H;
+  const len = Math.hypot(dx, dy), step = Math.PI / 12, ang = Math.round(Math.atan2(dy, dx) / step) * step;
+  return { x: a.x + Math.cos(ang) * len / W, y: a.y + Math.sin(ang) * len / H };
 }
 function canvasPoint(e) {
   const r = cv.getBoundingClientRect();
@@ -756,7 +788,7 @@ function hitStroke(p) {
       continue;
     }
     const P = s.pts.filter(q => q.dt <= v.elapsed + 0.001).map(q => [q.x * W, q.y * H]);
-    if (s.tool === 'arrow' && P.length > 2) P.splice(1, P.length - 2);
+    if (s.tool === 'line' && P.length > 2) P.splice(1, P.length - 2);
     const reach = strokeWidth(s, H) / 2 + slack;
     if (P.length === 1 && Math.hypot(x - P[0][0], y - P[0][1]) <= reach) return s;
     for (let j = 1; j < P.length; j++) if (distToSeg(x, y, P[j - 1], P[j]) <= reach) return s;
@@ -830,7 +862,10 @@ cv.addEventListener('pointerdown', e => {
   if (playing && $('freezeChk').checked) pause();
   drawing = { clipId: c.id, tool, color, size: +$('sizeIn').value,
               hold: $('holdSel').value, pts: [{ ...p, dt: 0 }], t0: performance.now(), ...anchorHere(c) };
-  if (tool === 'arrow') drawing.pts.push({ ...p, dt: 0 });
+  if (tool === 'line') {
+    drawing.dash = $('lineDash').value; drawing.ends = $('lineEnds').value;
+    drawing.pts.push({ ...p, dt: 0 });
+  }
   strokes.push(drawing);
 });
 const freezeLen = () => { const v = parseFloat($('freezeDur').value); return isNaN(v) ? 4 : Math.min(60, Math.max(0.5, v)); };
@@ -892,7 +927,7 @@ cv.addEventListener('pointermove', e => {
   if (!drawing) return;
   const p = canvasPoint(e);
   const dt = playing ? (performance.now() - drawing.t0) / 1000 : 0;
-  if (drawing.tool === 'arrow') drawing.pts[1] = { ...p, dt: 0 };
+  if (drawing.tool === 'line') drawing.pts[1] = { ...(e.shiftKey ? snapAngle(drawing.pts[0], p) : p), dt: 0 };
   else drawing.pts.push({ ...p, dt });
 });
 const endStroke = () => {
@@ -1050,6 +1085,7 @@ function setTool(t) {
   tool = t; hoverStroke = null;
   document.querySelectorAll('[data-tool]').forEach(x => x.classList.toggle('on', x.dataset.tool === t));
   cv.style.cursor = t === 'eraser' ? 'default' : t === 'text' ? 'text' : '';
+  $('lineOpts').hidden = t !== 'line';
 }
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
 $('undoBtn').onclick = undo;
@@ -1078,6 +1114,7 @@ document.addEventListener('keydown', e => {
   else if (e.key.toLowerCase() === 'e' && !e.ctrlKey && !e.metaKey) setTool(tool === 'eraser' ? 'pen' : 'eraser');
   else if (e.key.toLowerCase() === 't' && !e.ctrlKey && !e.metaKey) setTool(tool === 'text' ? 'pen' : 'text');
   else if (e.key.toLowerCase() === 'm' && !e.ctrlKey && !e.metaKey) setMuted(!muted);
+  else if (e.key.toLowerCase() === 'l' && !e.ctrlKey && !e.metaKey) setTool(tool === 'line' ? 'pen' : 'line');
   else if (e.key === 'ArrowLeft' && !exporting) seek(globalT - 1);
   else if (e.key === 'ArrowRight' && !exporting) seek(globalT + 1);
 });
