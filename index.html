@@ -73,6 +73,11 @@ aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; co
 .clip .new { margin-left: auto; font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); }
 .clip.fresh { box-shadow: 0 0 0 3px rgba(255, 210, 63, .18); }
 .clip .trim { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.clip .eye { display: inline-flex; align-items: center; }
+.clip .eye svg { width: 14px; height: 14px; }
+.clip.hidden { border-left-style: dashed; }
+.clip.hidden > :not(.top), .clip.hidden .top > :not(.eye) { opacity: .45; }
+.clip.hidden .eye { color: var(--accent); border-color: var(--accent); }
 .clip .trim input { width: 68px; font-family: var(--font-mono); font-size: 12px; }
 .clip .trim button, .clip .top button { padding: 2px 7px; font-size: 12px; }
 .clip .titlerow input[type=text] {
@@ -185,7 +190,7 @@ button.rec { color: var(--danger); }
   <aside>
     <h2>Clips, in play order</h2>
     <div id="bin" class="bin"></div>
-    <p class="hint" id="binHint">Add or drop video files. They play top to bottom. Trim each one with the start and end boxes (seconds into that file). To cut a long clip into parts, move the playhead and press Split.</p>
+    <p class="hint" id="binHint">Add or drop video files. They play top to bottom. Trim each one with the start and end boxes (seconds into that file). To cut a long clip into parts, move the playhead and press Split. The eye button hides a clip from playback and the export without removing it.</p>
     <p class="hint">Type a title on any clip to show it as a title card before the clip, or as a caption over its first seconds.</p>
     <h2>Drawing</h2>
     <p class="hint">Pause and draw: the drawing appears at that moment and stays for the time you pick under "Show for".
@@ -339,6 +344,8 @@ const ICONS = {
   play: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg>',
   pause: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>',
   sound: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.2 3.1M6.6 6.6C3.7 8.4 2 12 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg>',
   muted: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m16 9 6 6M22 9l-6 6"/></svg>',
 };
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -353,18 +360,23 @@ function layout() {
     c.fz = freezes.filter(f => f.clipId === c.id && f.src >= c.inP - 1e-6 && f.src < c.outP).sort((a, b) => a.src - b.src);
     let extra = 0;
     for (const f of c.fz) { f.g = c.vStart + (f.src - c.inP) + extra; extra += f.dur; }
-    c.len = c.card + Math.max(0, c.outP - c.inP) + extra;
+    c.full = c.card + Math.max(0, c.outP - c.inP) + extra;   // its length when shown, for the clip list
+    c.len = c.hidden ? 0 : c.full;
     c.color = SEG_COLORS[i % SEG_COLORS.length];
     g += c.len;
   });
   total = g;
   cur = Math.min(cur, Math.max(0, clips.length - 1));
 }
+// Hidden clips stay in the list but take no time: playback, the timeline and the export all skip them.
+const shown = () => clips.filter(c => !c.hidden);
 // Clip timeline: [title card] then video, with each frozen frame inserted at its source time.
 function locate(g) {
-  for (let i = 0; i < clips.length; i++) {
+  const last = clips.findLastIndex(c => !c.hidden);
+  for (let i = 0; i <= last; i++) {
     const c = clips[i];
-    if (g < c.gStart + c.len || i === clips.length - 1) {
+    if (c.hidden) continue;
+    if (g < c.gStart + c.len || i === last) {
       if (g < c.vStart) return { i, inCard: true, local: c.inP };
       let t = c.vStart, s = c.inP;
       for (const f of c.fz) {
@@ -389,7 +401,7 @@ function srcToGlobal(c, s) {
 // Strokes drawn on a frozen frame belong to that freeze and last until the video moves again.
 function strokeWindow(s) {
   const c = clips.find(c => c.id === s.clipId);
-  if (!c) return null;
+  if (!c || c.hidden) return null;
   if (s.freezeId) {
     const f = c.fz.find(f => f.id === s.freezeId);
     return f ? { gs: f.g + Math.min(s.fo, f.dur), end: f.g + f.dur } : null;
@@ -447,7 +459,7 @@ let freshId = null;
 function clearFresh() { if (freshId === null) return; freshId = null; document.querySelectorAll('.fresh').forEach(el => el.classList.remove('fresh')); document.querySelectorAll('.clip .new').forEach(el => el.remove()); }
 // Splitting gives the new part its own <video> on the same file, so playback hands over at the cut without a seek stall.
 async function splitAtPlayhead() {
-  if (!clips.length || exporting) return;
+  if (!shown().length || exporting) return;
   // Only pause when playing: pausing re-reads the time from the video, which would move a paused playhead off a title card.
   if (playing) pause();
   const loc = locate(globalT), c = clips[loc.i], cut = loc.local;
@@ -595,9 +607,10 @@ function pause() {
 }
 function advance() {
   const c = clips[cur];
-  if (cur + 1 < clips.length) {
+  const next = clips.findIndex((o, i) => i > cur && !o.hidden);
+  if (next !== -1) {
     c.video.pause();
-    cur++;
+    cur = next;
     const n = clips[cur];
     if (Math.abs(n.video.currentTime - n.inP) > 0.05) n.video.currentTime = n.inP;
     globalT = n.gStart;
@@ -609,9 +622,10 @@ function advance() {
   }
 }
 function grabFrame() {
-  const v = clips[cur]?.video;
+  const c = clips[cur], W = frame.width, H = frame.height;
+  if (c?.hidden) { fctx.fillStyle = '#000'; fctx.fillRect(0, 0, W, H); return; }   // every clip is hidden
+  const v = c?.video;
   if (!v || v.readyState < 2) return;
-  const W = frame.width, H = frame.height;
   const s = Math.min(W / v.videoWidth, H / v.videoHeight);
   const w = v.videoWidth * s, h = v.videoHeight * s;
   fctx.fillStyle = '#000'; fctx.fillRect(0, 0, W, H);
@@ -653,7 +667,7 @@ function compose() {
   ctx2d.drawImage(frame, 0, 0);
   drawSpotlights(W, H);   // under titles and drawings, so those stay bright
   const c = clips[cur];
-  if (c && c.title.trim()) {
+  if (c && !c.hidden && c.title.trim()) {
     // While paused, show the title fully in rather than mid-fade (at 0:00 it would still be invisible).
     const still = t => playing || exporting ? t : Math.max(t, Math.min(0.8, c.tDur - 0.4));
     if (c.tStyle === 'card' && globalT < c.vStart) drawCard(c, still(globalT - c.gStart), W, H);
@@ -1048,7 +1062,7 @@ function anchorHere(c) {
     : { src: loc.inCard ? c.inP - (c.vStart - globalT) : loc.local };
 }
 cv.addEventListener('pointerdown', e => {
-  if (!clips.length || exporting) return;
+  if (!shown().length || exporting) return;
   if (textEdit) { e.preventDefault(); closeText(true); return; }   // a click outside the box finishes it
   cv.setPointerCapture(e.pointerId);
   const c = clips[cur], p = canvasPoint(e);
@@ -1073,7 +1087,7 @@ cv.addEventListener('pointerdown', e => {
 });
 const freezeLen = () => { const v = parseFloat($('freezeDur').value); return isNaN(v) ? 2 : Math.min(60, Math.max(0.5, v)); };
 function refreshLens() {
-  document.querySelectorAll('.clip').forEach((row, i) => row.querySelector('.len').textContent = fmt(clips[i].len));
+  document.querySelectorAll('.clip').forEach((row, i) => row.querySelector('.len').textContent = fmt(clips[i].full));
 }
 // Drop frozen frames that no longer have any drawing on them.
 function pruneFreezes() {
@@ -1166,13 +1180,15 @@ function renderBin() {
   $('binHint').hidden = clips.length > 0;
   clips.forEach((c, i) => {
     const el = document.createElement('div');
-    el.className = 'clip' + (c.id === freshId ? ' fresh' : ''); el.style.setProperty('--c', c.color); el.dataset.id = c.id;
+    el.className = 'clip' + (c.id === freshId ? ' fresh' : '') + (c.hidden ? ' hidden' : ''); el.style.setProperty('--c', c.color); el.dataset.id = c.id;
     const p = partOf(c);
     el.innerHTML = `
       <div class="top">
         <span class="num">${String(i + 1).padStart(2, '0')}</span>
         <span class="name" title="${esc(c.name)}">${esc(c.name)}</span>
-        <span class="len">${fmt(c.len)}</span>
+        <span class="len">${fmt(c.full)}</span>
+        <button data-act="hide" class="eye" aria-pressed="${!!c.hidden}" aria-label="${c.hidden ? 'Show' : 'Hide'} clip ${i + 1}"
+          title="${c.hidden ? 'Hidden: left out of playback and the export. Click to show it again.' : 'Hide: leave this clip out of playback and the export, without removing it'}">${c.hidden ? ICONS.eyeOff : ICONS.eye}</button>
         <button data-act="up" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button data-act="down" aria-label="Move down" ${i === clips.length - 1 ? 'disabled' : ''}>↓</button>
         <button data-act="del" aria-label="Remove clip">✕</button>
@@ -1198,15 +1214,22 @@ function renderBin() {
 }
 function renderBinActive() {
   document.querySelectorAll('.clip').forEach(el => el.classList.toggle('active', clips[cur] && +el.dataset.id === clips[cur].id));
-  document.querySelectorAll('.seg').forEach((el, i) => el.classList.toggle('active', i === cur));
+  document.querySelectorAll('.seg').forEach(el => el.classList.toggle('active', clips[cur] && +el.dataset.id === clips[cur].id));
 }
 $('bin').addEventListener('click', e => {
   const el = e.target.closest('.clip'); if (!el || exporting) return;
   const i = clips.findIndex(c => c.id === +el.dataset.id), c = clips[i];
-  const act = e.target.dataset.act;
-  if (e.target.classList.contains('name')) return seek(c.gStart);
+  const act = e.target.closest('[data-act]')?.dataset.act;   // a click on the eye icon lands on its <svg>, not the button
+  if (e.target.classList.contains('name')) return c.hidden ? toast('This clip is hidden. Show it with the eye button first.') : seek(c.gStart);
   if (!act || ['in', 'out', 'title', 'tstyle', 'tdur'].includes(act)) return;
   freshId = null;
+  if (act === 'hide') {
+    pause();
+    c.hidden = !c.hidden;
+    layout(); renderBin(); renderTimeline(); syncButtons();
+    // Showing a clip jumps to its start; hiding one leaves the playhead where the clips after it now begin.
+    return seek(c.gStart, false);
+  }
   const here = clips[cur] === c ? c.video.currentTime : null;
   if (act === 'up' || act === 'down') {
     const j = act === 'up' ? i - 1 : i + 1;
@@ -1225,7 +1248,7 @@ $('bin').addEventListener('click', e => {
   }
   const keepLocal = clips[cur] ? clips[cur].video.currentTime : 0;
   layout(); renderBin(); renderTimeline(); syncButtons();
-  if (clips.length) { const a = clips[cur]; seek(srcToGlobal(a, Math.min(Math.max(a.inP, keepLocal), a.outP))); }
+  if (clips.length) { const a = clips[cur]; seek(a.hidden ? 0 : srcToGlobal(a, Math.min(Math.max(a.inP, keepLocal), a.outP))); }
 });
 // Typing a title updates live without rebuilding the list (which would steal focus).
 $('bin').addEventListener('input', e => {
@@ -1256,8 +1279,8 @@ $('bin').addEventListener('change', e => {
 // ---------- UI: timeline ----------
 function renderTimeline() {
   const segs = $('segs'); segs.innerHTML = '';
-  clips.forEach(c => {
-    const d = document.createElement('div'); d.className = 'seg' + (c.id === freshId ? ' fresh' : '');
+  shown().forEach(c => {
+    const d = document.createElement('div'); d.className = 'seg' + (c.id === freshId ? ' fresh' : ''); d.dataset.id = c.id;
     d.style.setProperty('--c', c.color);
     // 2px off the right edge leaves a gap between segments without moving where each one starts.
     d.style.left = `${(c.gStart / total) * 100}%`; d.style.width = `calc(${(c.len / total) * 100}% - 2px)`;
@@ -1328,10 +1351,12 @@ $('fileIn').onchange = e => { addFiles([...e.target.files]); e.target.value = ''
 $('resSel').onchange = applySize;
 function syncButtons() {
   $('playBtn').innerHTML = playing ? ICONS.pause + 'Pause' : ICONS.play + 'Play';
-  $('playBtn').disabled = !clips.length || exporting;
-  $('splitBtn').disabled = !clips.length || exporting;
-  $('splitBtn').title = exporting ? 'Unavailable while exporting' : !clips.length ? 'Add a clip to split' : 'Split the clip at the playhead into two parts (C)';
-  $('exportBtn').disabled = !clips.length || exporting || !!screenRec;
+  const none = !shown().length;
+  $('playBtn').disabled = none || exporting;
+  $('splitBtn').disabled = none || exporting;
+  $('splitBtn').title = exporting ? 'Unavailable while exporting' : !clips.length ? 'Add a clip to split' : none ? 'Every clip is hidden' : 'Split the clip at the playhead into two parts (C)';
+  $('exportBtn').disabled = none || exporting || !!screenRec;
+  $('exportBtn').title = clips.length && none ? 'Every clip is hidden. Show at least one to export.' : '';
   $('addBtn').disabled = exporting;
   $('recBtn').disabled = exporting || !!screenRec;
   $('resSel').disabled = exporting;
@@ -1439,10 +1464,10 @@ function pickMime() {
   return opts.find(m => MediaRecorder.isTypeSupported(m)) || '';
 }
 $('exportBtn').onclick = async () => {
-  if (!clips.length) return;
+  if (!shown().length) return;
   ensureAudio();
   pause(); seek(0, false);
-  await once(clips[0].video, 'seeked').catch(() => {});
+  await once(clips[cur].video, 'seeked').catch(() => {});
   grabFrame();
   const mime = pickMime();
   const stream = cv.captureStream(30);

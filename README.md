@@ -4,7 +4,7 @@ Join short video clips into one video, draw on top, and add titles — all in yo
 
 **Use it:** https://yalpe.github.io/clip-stitch/
 
-- Add clips, reorder them, and trim each one. Split a long clip at the playhead into parts you can trim, reorder or remove separately. Undo joins the parts back together.
+- Add clips, reorder them, and trim each one. Split a long clip at the playhead into parts you can trim, reorder or remove separately. Undo joins the parts back together. Hide a clip to leave it out of playback and the export while keeping it, with its trims, title and drawings, in the list.
 - Record your screen with microphone narration and computer sound; the recording lands in the clip list (Chrome or Edge on a computer).
 - Draw with a pen or straight lines (solid, dashed or dotted), or drag a spotlight to dim everything around an area. Pen strokes and lines can end in arrowheads at one or both ends. Remove any single drawing with the eraser (Undo brings it back). Draw while paused to place a drawing at that moment, or while playing to record the strokes as you make them.
 - Add text boxes: click to type, drag to move, click again to edit its text, size or color.
