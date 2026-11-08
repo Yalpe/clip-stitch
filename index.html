@@ -117,14 +117,15 @@ main { display: flex; flex-direction: column; min-height: 0; min-width: 0; paddi
 .seg.fresh { box-shadow: 0 0 0 2px var(--accent) inset; opacity: .9; }
 .transport .time b { color: var(--fg); font-weight: 600; }
 .timeline { position: relative; height: 44px; cursor: pointer; user-select: none; touch-action: none; }
-.segs { position: absolute; inset: 0 0 12px 0; display: flex; gap: 2px; }
+/* Segments are placed by time, exactly like the playhead and marks; flex with padding and gaps drifted out of step. */
+.segs { position: absolute; inset: 0 0 12px 0; }
 .seg i { position: absolute; inset: 0 auto 0 0; background: rgba(0, 0, 0, .4); }
-.seg span { position: relative; }
+.seg span { position: relative; display: block; padding: 2px 6px; overflow: hidden; text-overflow: ellipsis; }
 .seg b { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(0, 0, 0, .55) 0 3px, transparent 3px 7px); }
 .freeze-panel { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 8px; color: var(--muted); }
 .freeze-panel strong { color: var(--accent); font-weight: 600; }
 .freeze-panel input { width: 60px; }
-.seg { position: relative; background: var(--c); opacity: .55; border-radius: 4px; min-width: 2px; overflow: hidden; font-size: 11px; color: #000; padding: 2px 6px; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.seg { position: absolute; top: 0; bottom: 0; background: var(--c); opacity: .55; border-radius: 4px; min-width: 2px; overflow: hidden; font-size: 11px; color: #000; white-space: nowrap; font-weight: 600; }
 .seg.active { opacity: .9; }
 .marks { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; }
 .mark { position: absolute; bottom: 0; width: 3px; height: 8px; background: var(--accent); border-radius: 1px; }
@@ -1257,7 +1258,9 @@ function renderTimeline() {
   const segs = $('segs'); segs.innerHTML = '';
   clips.forEach(c => {
     const d = document.createElement('div'); d.className = 'seg' + (c.id === freshId ? ' fresh' : '');
-    d.style.setProperty('--c', c.color); d.style.flex = `${c.len} 0 0`;
+    d.style.setProperty('--c', c.color);
+    // 2px off the right edge leaves a gap between segments without moving where each one starts.
+    d.style.left = `${(c.gStart / total) * 100}%`; d.style.width = `calc(${(c.len / total) * 100}% - 2px)`;
     d.innerHTML = (c.card ? `<i style="width:${(c.card / c.len) * 100}%"></i>` : '')
       + c.fz.map(f => `<b style="left:${((f.g - c.gStart) / c.len) * 100}%;width:${(f.dur / c.len) * 100}%"></b>`).join('')
       + `<span>${esc(c.title.trim() || label(c))}</span>`;
