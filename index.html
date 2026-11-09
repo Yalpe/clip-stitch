@@ -427,7 +427,8 @@ async function addFiles(files) {
     if (!isFinite(dur)) dur = await probeDuration(v);
     if (!isFinite(dur) || dur <= 0) { toast(`Couldn't read the length of “${file.name}”.`, true); v.remove(); URL.revokeObjectURL(url); continue; }
     const c = { id: nextId++, name: file.name, url, video: v, dur, inP: 0, outP: dur, title: '', tStyle: 'card', tDur: 2 };
-    clips.push(c);
+    // Lay out at once: the next file's load yields to tick(), which reads each clip's layout.
+    clips.push(c); layout();
     hookUp(c);
     if (clips.length === 1) { applySize(); }
   }
